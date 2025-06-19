@@ -1,0 +1,19 @@
+{
+  "name": "guida-app-mock-server",
+  "version": "1.0.0",
+  "description": "Mock server for testing Guida App speech recognition and image processing",
+  "main": "mock-server.js",
+  "scripts": {
+    "start": "node mock-server.js",
+    "dev": "nodemon mock-server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "keywords": ["mock", "server", "speech", "image", "android"],
+  "author": "Guida App",
+  "license": "MIT"
+} 
