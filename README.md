@@ -1,5 +1,96 @@
-# Guida App - Speech Recognition Implementation
+# Guida Assistant - Multi-App Architecture
 
+This repository contains the complete Guida Assistant system with a multi-app architecture:
+
+## Project Structure
+
+```
+GuidaMT6762/
+├── glasses-app/          # Android app for embedded glasses system
+│   ├── app/              # Glasses app source code
+│   ├── build.gradle.kts  # Glasses app build configuration
+│   └── settings.gradle.kts
+├── phone-app/            # Android app for user's phone
+│   ├── app/              # Phone app source code
+│   ├── build.gradle.kts  # Phone app build configuration
+│   └── settings.gradle.kts
+├── server.py             # Flask backend server
+├── requirements.txt      # Python dependencies
+└── README.md            # This file
+```
+
+## Apps Overview
+
+### Glasses App (`glasses-app/`)
+- **Purpose**: Embedded system in glasses
+- **Features**:
+  - Camera capture
+  - Speech recognition
+  - WiFi communication with phone app
+  - Text-to-Speech (for response playback)
+  - Minimal UI for embedded system
+
+### Phone App (`phone-app/`)
+- **Purpose**: User's phone application
+- **Features**:
+  - WiFi server to receive data from glasses
+  - Backend communication
+  - Response processing
+  - User interface and settings
+
+### Backend Server (`server.py`)
+- **Purpose**: AI processing and response generation
+- **Features**:
+  - Receives image and text from phone app
+  - Processes data with AI
+  - Returns response to phone app
+
+## Development Workflow
+
+1. **Glasses App** captures image and speech
+2. **Glasses App** sends data to **Phone App** via WiFi
+3. **Phone App** sends data to **Backend Server**
+4. **Backend Server** processes and returns response
+5. **Phone App** sends response back to **Glasses App**
+6. **Glasses App** plays response via Text-to-Speech
+
+## Building the Apps
+
+### Glasses App
+```bash
+cd glasses-app
+./gradlew assembleDebug
+```
+
+### Phone App
+```bash
+cd phone-app
+./gradlew assembleDebug
+```
+
+## Running the Backend Server
+```bash
+python server.py
+```
+
+## Current Status
+
+- ✅ Image capture and speech recognition working
+- ✅ Backend server receiving and processing data
+- ✅ Multi-app structure created
+- 🔄 WiFi communication between apps (in progress)
+- 🔄 Text-to-Speech implementation (pending)
+- 🔄 Phone app UI development (pending)
+
+## Next Steps
+
+1. Implement WiFi communication between glasses and phone apps
+2. Add Text-to-Speech to glasses app
+3. Develop phone app UI and functionality
+4. Test end-to-end communication flow
+
+# Guida App - Speech Recognition Implementation
+~~~~
 This Android app has been modified to use Android's built-in SpeechRecognizer for speech-to-text conversion instead of audio recording. The app now captures speech input, converts it to text, and sends both the text and a base64-encoded image to a mock Azure endpoint.
 
 ## Key Changes Made

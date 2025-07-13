@@ -2,165 +2,318 @@ package com.guidaco.guidaapp0606
 
 import android.Manifest
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Bundle
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
-import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.ViewModelProvider
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.rememberMultiplePermissionsState
 import com.guidaco.guidaapp0606.ui.theme.GuidaApp0606Theme
+import androidx.compose.ui.platform.LocalContext
 
+@OptIn(ExperimentalPermissionsApi::class)
 class MainActivity : ComponentActivity() {
-    private lateinit var audioManager: AudioManager
-    private lateinit var cameraManager: CameraManager
+
+    private lateinit var viewModel: MainViewModel
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
-        audioManager = AudioManager(this)
-        cameraManager = CameraManager(this)
-        
+        android.util.Log.i("guida", "MainActivity onCreate called")
+        viewModel = ViewModelProvider(this, ViewModelProvider.AndroidViewModelFactory.getInstance(application))[MainViewModel::class.java]
+        // Create and set SpeechRecognitionManager
+        val speechRecognitionManager = SpeechRecognitionManager(this)
+        viewModel.setSpeechRecognitionManager(speechRecognitionManager)
         setContent {
             GuidaApp0606Theme {
-                MainScreen(
-                    audioManager = audioManager,
-                    cameraManager = cameraManager,
-                    onNavigateToSettings = {
-                        startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
-                    }
+                val permissionsState = rememberMultiplePermissionsState(
+                    permissions = listOf(
+                        Manifest.permission.CAMERA,
+                        Manifest.permission.RECORD_AUDIO
+                    )
                 )
+                LaunchedEffect(key1 = true) {
+                    if (!permissionsState.allPermissionsGranted) {
+                        permissionsState.launchMultiplePermissionRequest()
+                    }
+                }
+                if (permissionsState.allPermissionsGranted) {
+                    LaunchedEffect(key1 = Unit) {
+                        viewModel.initialize(this@MainActivity)
+                    }
+                    val uiState by viewModel.uiState.collectAsState()
+                    val wifiState by viewModel.wifiState.collectAsState()
+                    val context = LocalContext.current
+                    // Show Toast for one-shot messages
+                    if (uiState is MainViewModel.UiState.ToastMessage) {
+                        val msg = (uiState as MainViewModel.UiState.ToastMessage).message
+                        LaunchedEffect(msg) {
+                            android.util.Log.i("GuidaToast", "Toast: $msg")
+                            android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                            viewModel.initialize(this@MainActivity) // Reset to AwaitingInput
+                        }
+                    }
+                    MainScreen(
+                        uiState = uiState,
+                        onControlButtonClick = { viewModel.onCaptureButtonPressed() },
+                        onSettingsClick = {
+                            startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
+                        },
+                        onRetryClick = { viewModel.initialize(this@MainActivity) },
+                        wifiState = wifiState,
+                        onTestWifiClick = { testWifiConnection() }
+                    )
+                } else {
+                    PermissionRequestScreen {
+                        permissionsState.launchMultiplePermissionRequest()
+                    }
+                }
             }
         }
     }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        android.util.Log.i("guida", "onKeyDown called with keyCode: $keyCode")
+        when (keyCode) {
+            android.view.KeyEvent.KEYCODE_F1 -> {
+                android.util.Log.i("guida", "F1 button pressed")
+                viewModel.onF1ButtonPressed()
+                return true
+            }
+            android.view.KeyEvent.KEYCODE_F2 -> {
+                android.util.Log.i("guida", "F2 button pressed")
+                viewModel.onF2ButtonPressed()
+                return true
+            }
+            android.view.KeyEvent.KEYCODE_VOLUME_UP -> {
+                android.util.Log.i("guida", "Volume up button pressed")
+                viewModel.onVolumeUpPressed()
+                return true
+            }
+            android.view.KeyEvent.KEYCODE_VOLUME_DOWN -> {
+                android.util.Log.i("guida", "Volume down button pressed")
+                viewModel.onVolumeDownPressed()
+                return true
+            }
+            android.view.KeyEvent.KEYCODE_POWER -> {
+                android.util.Log.i("guida", "Power button pressed")
+                // Test WiFi connection when power button is pressed
+                testWifiConnection()
+                return true
+            }
+            else -> return super.onKeyDown(keyCode, event)
+        }
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        android.util.Log.i("guida", "onKeyUp called with keyCode: $keyCode")
+        when (keyCode) {
+            android.view.KeyEvent.KEYCODE_F1,
+            android.view.KeyEvent.KEYCODE_F2,
+            android.view.KeyEvent.KEYCODE_VOLUME_UP,
+            android.view.KeyEvent.KEYCODE_VOLUME_DOWN,
+            android.view.KeyEvent.KEYCODE_POWER -> {
+                return true
+            }
+            else -> return super.onKeyUp(keyCode, event)
+        }
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        android.util.Log.i("guida", "dispatchKeyEvent called with keyCode: ${event.keyCode}, action: ${event.action}")
+        return super.dispatchKeyEvent(event)
+    }
     
-    override fun onDestroy() {
-        super.onDestroy()
-        audioManager.release()
-        cameraManager.release()
+    // Test WiFi connection function
+    private fun testWifiConnection() {
+        // Replace these with your actual WiFi credentials
+        val ssid = "3609"  // Your actual WiFi name
+        val password = "66668888"  // Your actual WiFi password
+        
+        android.util.Log.i("guida", "Testing WiFi connection to: $ssid")
+        viewModel.connectToWifi(ssid, password)
     }
 }
 
-@OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
-    audioManager: AudioManager,
-    cameraManager: CameraManager,
-    onNavigateToSettings: () -> Unit
+    uiState: MainViewModel.UiState,
+    onControlButtonClick: () -> Unit,
+    onSettingsClick: () -> Unit,
+    onRetryClick: () -> Unit,
+    wifiState: GuidaWifiManager.WifiState?,
+    onTestWifiClick: () -> Unit
 ) {
-    val context = LocalContext.current
-    val activity = context as MainActivity
-    
-    // Initialize camera when permissions are granted
-    LaunchedEffect(Unit) {
-        cameraManager.initializeCamera(
-            lifecycleOwner = activity,
-            onSuccess = { /* Camera initialized */ },
-            onError = { /* Handle error */ }
-        )
-    }
-    
-    val viewModel: MainViewModel = viewModel(
-        factory = MainViewModelFactory(context, audioManager, cameraManager)
-    )
-    
-    val uiState by viewModel.uiState.collectAsState()
-    
-    // Permission handling
-    val permissionsState = rememberMultiplePermissionsState(
-        permissions = listOf(
-            Manifest.permission.CAMERA,
-            Manifest.permission.RECORD_AUDIO
-        )
-    )
-    
-    LaunchedEffect(permissionsState.allPermissionsGranted) {
-        if (!permissionsState.allPermissionsGranted) {
-            permissionsState.launchMultiplePermissionRequest()
-        }
-        // Vosk works on all devices - no special availability checks needed
-    }
-    
     Scaffold(
         topBar = {
             TopAppBar(
-                title = {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = stringResource(R.string.main_title),
-                            fontSize = 24.sp,
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center
-                        )
-                        Text(
-                            text = stringResource(R.string.main_subtitle),
-                            fontSize = 14.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center
-                        )
-                    }
-                },
+                title = { Text("Guida Assistant") },
                 actions = {
-                    IconButton(
-                        onClick = onNavigateToSettings,
-                        modifier = Modifier.semantics {
-                            contentDescription = context.getString(R.string.settings_button_desc)
-                        }
-                    ) {
-                        Text("⚙", fontSize = 24.sp)
+                    IconButton(onClick = onSettingsClick) {
+                        Icon(painter = painterResource(id = R.drawable.ic_settings), contentDescription = "Settings")
                     }
                 }
             )
-        },
-        modifier = Modifier.semantics {
-            contentDescription = context.getString(R.string.main_content_desc)
         }
-    ) { innerPadding ->
-        
-        if (!permissionsState.allPermissionsGranted) {
-            // Show permission request UI
-            PermissionRequestScreen(
-                onRequestPermissions = {
-                    permissionsState.launchMultiplePermissionRequest()
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Top
+        ) {
+            // WiFi status and test button at the top
+            wifiState?.let {
+                when (it) {
+                    is GuidaWifiManager.WifiState.Status -> StatusCard(status = "WiFi Status", message = it.message)
+                    is GuidaWifiManager.WifiState.Error -> StatusCard(status = "WiFi Error", message = it.message, isError = true)
+                    is GuidaWifiManager.WifiState.Connected -> StatusCard(status = "WiFi Connected", message = "Connected to ${it.ssid}")
+                    is GuidaWifiManager.WifiState.Disconnected -> StatusCard(status = "WiFi", message = "Disconnected")
+                    is GuidaWifiManager.WifiState.Connecting -> StatusCard(status = "WiFi", message = "Connecting...")
                 }
-            )
-        } else {
-            // Main app content
-            MainContent(
-                uiState = uiState,
-                onRecordButtonPressed = viewModel::onRecordButtonPressed,
-                modifier = Modifier.padding(innerPadding)
-            )
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+            Button(onClick = onTestWifiClick) {
+                Text("Test WiFi Connection")
+            }
+            Spacer(modifier = Modifier.height(24.dp))
+            // --- Restore original main controls below ---
+            when (uiState) {
+                is MainViewModel.UiState.Initializing -> {
+                    StatusCard(status = "Status", message = "Initializing...")
+                    ControlButton(
+                        iconResId = R.drawable.ic_retry,
+                        text = "Initializing",
+                        onClick = { /* Disabled */ },
+                        backgroundColor = Color.Gray,
+                        enabled = false
+                    )
+                }
+                is MainViewModel.UiState.AwaitingInput -> {
+                    StatusCard(status = "Status", message = "Ready")
+                    ControlButton(
+                        iconResId = R.drawable.ic_record,
+                        text = "Capture",
+                        onClick = onControlButtonClick,
+                        backgroundColor = MaterialTheme.colorScheme.primary,
+                        enabled = true
+                    )
+                }
+                is MainViewModel.UiState.Processing -> {
+                    StatusCard(status = "Status", message = uiState.message)
+                    ControlButton(
+                        iconResId = R.drawable.ic_processing,
+                        text = "Processing",
+                        onClick = { /* Disabled */ },
+                        backgroundColor = Color.Gray,
+                        enabled = false
+                    )
+                }
+                is MainViewModel.UiState.Error -> {
+                    StatusCard(status = "Error occurred", message = uiState.message, isError = true)
+                    ControlButton(
+                        iconResId = R.drawable.ic_retry,
+                        text = "Retry",
+                        onClick = onRetryClick,
+                        backgroundColor = Color.Red,
+                        enabled = true
+                    )
+                }
+                is MainViewModel.UiState.ToastMessage -> { /* No UI, handled by Toast above */ }
+            }
         }
     }
 }
 
 @Composable
-fun PermissionRequestScreen(
-    onRequestPermissions: () -> Unit
+fun StatusCard(status: String, message: String, isError: Boolean = false) {
+        Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 24.dp),
+            colors = CardDefaults.cardColors(
+            containerColor = if (isError) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Column(
+            modifier = Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+            ) {
+            Text(text = status, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(text = message, textAlign = TextAlign.Center)
+        }
+    }
+}
+
+@Composable
+fun ControlButton(
+    iconResId: Int,
+    text: String,
+    onClick: () -> Unit,
+    backgroundColor: Color,
+    enabled: Boolean
 ) {
-    val context = LocalContext.current
-    
+    val rotation = remember { Animatable(0f) }
+                
+    if (iconResId == R.drawable.ic_processing) {
+        LaunchedEffect(Unit) {
+            rotation.animateTo(
+                targetValue = 360f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(1000, easing = LinearEasing),
+                    repeatMode = RepeatMode.Restart
+                )
+            )
+        }
+    } else {
+        LaunchedEffect(Unit) {
+            rotation.snapTo(0f)
+        }
+    }
+
+        Button(
+        onClick = onClick,
+        modifier = Modifier.size(150.dp),
+        shape = CircleShape,
+        colors = ButtonDefaults.buttonColors(containerColor = backgroundColor),
+        enabled = enabled
+        ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(
+                painter = painterResource(id = iconResId),
+                contentDescription = text,
+                modifier = Modifier
+                    .size(48.dp)
+                    .rotate(rotation.value)
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(text = text)
+        }
+    }
+}
+
+@Composable
+fun PermissionRequestScreen(onRequestPermissions: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -168,230 +321,30 @@ fun PermissionRequestScreen(
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.errorContainer
-            )
-        ) {
-            Column(
-                modifier = Modifier.padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    text = stringResource(R.string.permission_error),
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onErrorContainer,
-                    textAlign = TextAlign.Center
-                )
-                
-                Text(
-                    text = stringResource(R.string.camera_permission_required),
-                    fontSize = 16.sp,
-                    color = MaterialTheme.colorScheme.onErrorContainer,
-                    textAlign = TextAlign.Center
-                )
-                
-                Text(
-                    text = stringResource(R.string.audio_permission_required),
-                    fontSize = 16.sp,
-                    color = MaterialTheme.colorScheme.onErrorContainer,
-                    textAlign = TextAlign.Center
-                )
-                
-                Button(
-                    onClick = onRequestPermissions,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .semantics {
-                            contentDescription = "Grant permissions button"
-                        }
-                ) {
-                    Text(
-                        text = "Grant Permissions",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-            }
+        Text("Permissions Required", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            "This app needs Camera and Audio permissions to function correctly. Please grant them.",
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(24.dp))
+        Button(onClick = onRequestPermissions) {
+            Text("Grant Permissions")
         }
     }
 }
 
+@Preview(showBackground = true)
 @Composable
-fun MainContent(
-    uiState: MainUiState,
-    onRecordButtonPressed: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val context = LocalContext.current
-    
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        
-        // Status Card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = when (uiState.appState) {
-                    AppState.READY -> MaterialTheme.colorScheme.surfaceVariant
-                    AppState.RECORDING -> MaterialTheme.colorScheme.primaryContainer
-                    AppState.PROCESSING -> MaterialTheme.colorScheme.secondaryContainer
-                    AppState.PLAYING -> MaterialTheme.colorScheme.tertiaryContainer
-                    AppState.ERROR -> MaterialTheme.colorScheme.errorContainer
-                }
-            )
-        ) {
-            Column(
-                modifier = Modifier.padding(20.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text(
-                    text = "Status",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                
-                Text(
-                    text = uiState.statusMessage.ifEmpty { stringResource(R.string.ready) },
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.semantics {
-                        contentDescription = "Current status: ${uiState.statusMessage.ifEmpty { context.getString(R.string.ready) }}"
-                    }
-                )
-                
-                // Show partial speech text during recording
-                if (uiState.appState == AppState.RECORDING && uiState.partialSpeechText.isNotEmpty()) {
-                    Text(
-                        text = "\"${uiState.partialSpeechText}\"",
-                        fontSize = 16.sp,
-                        fontStyle = FontStyle.Italic,
-                        color = MaterialTheme.colorScheme.primary,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.semantics {
-                            contentDescription = "Speech: ${uiState.partialSpeechText}"
-                        }
-                    )
-                }
-                
-                if (uiState.errorMessage.isNotEmpty()) {
-                    Text(
-                        text = uiState.errorMessage,
-                        fontSize = 14.sp,
-                        color = MaterialTheme.colorScheme.error,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.semantics {
-                            contentDescription = "Error: ${uiState.errorMessage}"
-                        }
-                    )
-                }
-            }
-        }
-        
-        Spacer(modifier = Modifier.weight(1f))
-        
-        // Main Record Button
-        Button(
-            onClick = onRecordButtonPressed,
-            modifier = Modifier
-                .size(200.dp)
-                .semantics {
-                    contentDescription = "Speech recognition button" + 
-                            when (uiState.appState) {
-                                AppState.READY -> ". Press to start listening for speech"
-                                AppState.RECORDING -> ". Press to stop listening"
-                                AppState.PROCESSING -> ". Currently processing"
-                                AppState.PLAYING -> ". Currently playing response"
-                                AppState.ERROR -> ". Press to retry"
-                            }
-                },
-            colors = ButtonDefaults.buttonColors(
-                containerColor = when (uiState.appState) {
-                    AppState.READY -> MaterialTheme.colorScheme.primary
-                    AppState.RECORDING -> MaterialTheme.colorScheme.error
-                    AppState.PROCESSING -> MaterialTheme.colorScheme.secondary
-                    AppState.PLAYING -> MaterialTheme.colorScheme.tertiary
-                    AppState.ERROR -> MaterialTheme.colorScheme.error
-                }
-            ),
-            shape = RoundedCornerShape(100.dp),
-            enabled = uiState.appState != AppState.PROCESSING && uiState.appState != AppState.PLAYING
-        ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                Text(
-                    text = when (uiState.appState) {
-                        AppState.READY -> "🎤"
-                        AppState.RECORDING -> "⏹"
-                        AppState.PROCESSING -> "⚙"
-                        AppState.PLAYING -> "🔊"
-                        AppState.ERROR -> "🔄"
-                    },
-                    fontSize = 48.sp
-                )
-                
-                Text(
-                    text = when (uiState.appState) {
-                        AppState.READY -> stringResource(R.string.start_listening)
-                        AppState.RECORDING -> stringResource(R.string.stop_listening)
-                        AppState.PROCESSING -> stringResource(R.string.processing)
-                        AppState.PLAYING -> "Playing"
-                        AppState.ERROR -> "Retry"
-                    },
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    textAlign = TextAlign.Center
-                )
-            }
-        }
-        
-
-        
-        Spacer(modifier = Modifier.weight(1f))
-        
-        // Instructions
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-            )
-        ) {
-            Text(
-                text = when (uiState.appState) {
-                    AppState.READY -> "Press the button to start speech recognition and capture an image"
-                    AppState.RECORDING -> "Listening for speech... Speak clearly into the microphone"
-                    AppState.PROCESSING -> "Processing your speech and image, please wait..."
-                    AppState.PLAYING -> "Playing text-to-speech response..."
-                    AppState.ERROR -> "An error occurred. Press the button to try again"
-                },
-                modifier = Modifier
-                    .padding(16.dp)
-                    .semantics {
-                        contentDescription = "Instructions: " + when (uiState.appState) {
-                            AppState.READY -> "Press the button to start speech recognition and capture an image"
-                            AppState.RECORDING -> "Listening for speech. Speak clearly into the microphone"
-                            AppState.PROCESSING -> "Processing your speech and image, please wait"
-                            AppState.PLAYING -> "Playing text-to-speech response"
-                            AppState.ERROR -> "An error occurred. Press the button to try again"
-                        }
-                    },
-                fontSize = 16.sp,
-                textAlign = TextAlign.Center,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
+fun MainScreenPreview() {
+    GuidaApp0606Theme {
+        MainScreen(
+            uiState = MainViewModel.UiState.AwaitingInput,
+            onControlButtonClick = {},
+            onSettingsClick = {},
+            onRetryClick = {},
+            wifiState = null,
+            onTestWifiClick = {}
+        )
     }
 }

@@ -1,12 +1,6 @@
 pluginManagement {
     repositories {
-        google {
-            content {
-                includeGroupByRegex("com\\.android.*")
-                includeGroupByRegex("com\\.google.*")
-                includeGroupByRegex("androidx.*")
-            }
-        }
+        google()
         mavenCentral()
         gradlePluginPortal()
     }
@@ -16,6 +10,15 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // Insecure fallbacks for network issues
+        maven { 
+            url = uri("http://repo.maven.apache.org/maven2")
+            isAllowInsecureProtocol = true 
+        }
+        maven { 
+            url = uri("http://plugins.gradle.org/m2/")
+            isAllowInsecureProtocol = true
+        }
     }
 }
 

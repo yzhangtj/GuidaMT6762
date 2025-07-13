@@ -81,6 +81,9 @@ dependencies {
     implementation("net.java.dev.jna:jna:5.12.1@aar")
     implementation("com.alphacephei:vosk-android:0.3.47")
     
+    // Added from the code block
+    implementation("androidx.lifecycle:lifecycle-viewmodel:2.7.0")
+    
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

@@ -29,6 +29,7 @@ class AudioManager(private val context: Context) {
     
     private fun initializeTextToSpeech() {
         textToSpeech = TextToSpeech(context) { status ->
+        Log.i("TTS", "onInit status: $status")
             if (status == TextToSpeech.SUCCESS) {
                 textToSpeech?.language = Locale.getDefault()
                 ttsInitialized = true
