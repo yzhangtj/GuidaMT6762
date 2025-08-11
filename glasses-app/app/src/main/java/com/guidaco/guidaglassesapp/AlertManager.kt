@@ -24,8 +24,8 @@ class AlertManager {
         private const val STATIC_SPEED_THRESHOLD = 0.3f // m/s
         
         // Direction thresholds (angles in degrees - horizontal only)
-        private const val AZIMUTH_LEFT = -10.0f
-        private const val AZIMUTH_RIGHT = 10.0f
+        private const val AZIMUTH_LEFT = 0f
+        private const val AZIMUTH_RIGHT = 0f
         
         // Alert distance thresholds (for fallback distance-only alerts)
         private const val CLOSE_DISTANCE_THRESHOLD = 50.0f // 50cm - immediate alert

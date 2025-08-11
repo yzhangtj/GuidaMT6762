@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Test App</string>
+    <string name="f1_button">F1</string>
+    <string name="default_prompt">What do you see?</string>
+</resources> 

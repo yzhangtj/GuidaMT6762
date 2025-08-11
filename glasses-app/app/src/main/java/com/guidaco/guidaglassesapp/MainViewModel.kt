@@ -52,27 +52,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    fun onCaptureButtonPressed() {
-        if (_uiState.value !is UiState.AwaitingInput) return
-        _uiState.value = UiState.Processing("Capturing image...")
-        cameraManager.captureImage(
-            onImageCaptured = { file ->
-                _uiState.value = UiState.Processing("Image captured. Path: ${file.absolutePath}")
-            },
-            onError = { exception ->
-                _uiState.value = UiState.Error("Failed to capture image: ${exception.message}")
-            }
-        )
-    }
-
     fun setSpeechRecognitionManager(manager: SpeechRecognitionManager) {
         speechRecognitionManager = manager
     }
 
     fun onF1ButtonPressed() {
+        Log.i("guida", "[MainViewModel] onF1ButtonPressed called. Current state: ${_uiState.value}, isListening: $isListening")
         if (!isListening) {
             // Start capture and listening
-            audioManager.speak("Capturing image and starting speech recognition")
+            audioManager.speakOffline("Capturing image and starting speech recognition")
             _uiState.value = UiState.Processing("Capturing image and starting speech recognition...")
             cameraManager.captureImage(
                 onImageCaptured = { file ->
@@ -84,6 +72,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         speechJob = CoroutineScope(Dispatchers.Main).launch {
                             val result = manager.startListeningForSpeech(
                                 onPartialResult = { partial ->
+                                    Log.i("guida", "[SpeechRecognition] Partial: $partial")
                                     _uiState.value = UiState.Processing("Listening: $partial")
                                 },
                                 onError = { err ->
@@ -106,7 +95,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         } else {
             // Stop listening and send data
-            audioManager.speak("Stopping speech recognition and sending data")
+            audioManager.speakOffline("Stopping speech recognition and sending data")
             _uiState.value = UiState.Processing("Stopping speech recognition...")
             
             // Stop the speech recognition
@@ -150,7 +139,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.value = UiState.ShowingResponse(response, apiProvider)
                 
                 // Speak the response to the user
-                audioManager.speak(response)
+                audioManager.speakOffline(response)
                 
                 // Reset to awaiting input after a delay
                 CoroutineScope(Dispatchers.Main).launch {
@@ -161,7 +150,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             onError = { error ->
                 _uiState.value = UiState.Error("Failed to send data: $error")
                 // Also speak the error
-                audioManager.speak("Error occurred: $error")
+                audioManager.speakOffline("Error occurred: $error")
             }
         )
     }

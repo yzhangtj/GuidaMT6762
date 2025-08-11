@@ -39,6 +39,7 @@ import android.bluetooth.le.AdvertiseSettings
 import android.bluetooth.le.BluetoothLeAdvertiser
 import android.provider.Settings
 import android.speech.tts.TextToSpeech
+import android.util.Log
 
 @OptIn(ExperimentalPermissionsApi::class)
 class MainActivity : ComponentActivity() {
@@ -179,7 +180,7 @@ class MainActivity : ComponentActivity() {
                     }
                     MainScreen(
                         uiState = uiState,
-                        onControlButtonClick = { viewModel.onCaptureButtonPressed() },
+                        onControlButtonClick = { viewModel.onF1ButtonPressed() },
                         onSettingsClick = {
                             startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
                         },
@@ -247,6 +248,7 @@ class MainActivity : ComponentActivity() {
                     handler.removeCallbacks(f1LongPressRunnable)
                     if (!f1LongPressHandled) {
                         // Short press: trigger capture + speech recognition
+                        Log.i("guida", "F1 short press detected! Calling viewModel.onF1ButtonPressed()")
                         viewModel.onF1ButtonPressed()
                     }
                 }
@@ -393,91 +395,114 @@ fun MainScreen(
                 .padding(paddingValues)
                 .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Top
+            verticalArrangement = Arrangement.SpaceBetween // Push content to top and bottom
         ) {
-            // WiFi status and test button at the top
-            wifiState?.let {
-                when (it) {
-                    is GuidaWifiManager.WifiState.Status -> StatusCard(status = "WiFi Status", message = it.message)
-                    is GuidaWifiManager.WifiState.Error -> StatusCard(status = "WiFi Error", message = it.message, isError = true)
-                    is GuidaWifiManager.WifiState.Connected -> StatusCard(status = "WiFi Connected", message = "Connected to ${it.ssid}")
-                    is GuidaWifiManager.WifiState.Disconnected -> StatusCard(status = "WiFi", message = "Disconnected")
-                    is GuidaWifiManager.WifiState.Connecting -> StatusCard(status = "WiFi", message = "Connecting...")
+            // --- Top Section ---
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                // WiFi status and test button at the top
+                wifiState?.let {
+                    when (it) {
+                        is GuidaWifiManager.WifiState.Status -> StatusCard(status = "WiFi Status", message = it.message)
+                        is GuidaWifiManager.WifiState.Error -> StatusCard(status = "WiFi Error", message = it.message, isError = true)
+                        is GuidaWifiManager.WifiState.Connected -> StatusCard(status = "WiFi Connected", message = "Connected to ${it.ssid}")
+                        is GuidaWifiManager.WifiState.Disconnected -> StatusCard(status = "WiFi", message = "Disconnected")
+                        is GuidaWifiManager.WifiState.Connecting -> StatusCard(status = "WiFi", message = "Connecting...")
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+                Button(onClick = onTestWifiClick) {
+                    Text("Test WiFi Connection")
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+                Button(
+                    onClick = onRadarClick,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondary
+                    )
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_radar),
+                        contentDescription = "Radar",
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Radar View")
                 }
             }
-            Spacer(modifier = Modifier.height(16.dp))
-            Button(onClick = onTestWifiClick) {
-                Text("Test WiFi Connection")
-            }
-            Spacer(modifier = Modifier.height(16.dp))
-            Button(
-                onClick = onRadarClick,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.secondary
-                )
+
+            // --- Bottom Section (Main Controls) ---
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    painter = painterResource(id = R.drawable.ic_radar),
-                    contentDescription = "Radar",
-                    modifier = Modifier.size(24.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Radar View")
-            }
-            Spacer(modifier = Modifier.height(24.dp))
-            // --- Restore original main controls below ---
-            when (uiState) {
-                is MainViewModel.UiState.Initializing -> {
-                    StatusCard(status = "Status", message = "Initializing...")
-                    ControlButton(
-                        iconResId = R.drawable.ic_retry,
-                        text = "Initializing",
-                        onClick = { /* Disabled */ },
-                        backgroundColor = Color.Gray,
-                        enabled = false
-                    )
+                when (uiState) {
+                    is MainViewModel.UiState.Initializing -> {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            StatusCard(status = "Status", message = "Initializing...")
+                            Spacer(modifier = Modifier.height(16.dp))
+                            ControlButton(
+                                iconResId = R.drawable.ic_retry,
+                                text = "Initializing",
+                                onClick = { /* Disabled */ },
+                                backgroundColor = Color.Gray,
+                                enabled = false
+                            )
+                        }
+                    }
+                    is MainViewModel.UiState.AwaitingInput -> {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            StatusCard(status = "Status", message = "Ready")
+                            Spacer(modifier = Modifier.height(16.dp))
+                            ControlButton(
+                                iconResId = R.drawable.ic_record,
+                                text = "Capture",
+                                onClick = onControlButtonClick,
+                                backgroundColor = MaterialTheme.colorScheme.primary,
+                                enabled = true
+                            )
+                        }
+                    }
+                    is MainViewModel.UiState.Processing -> {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            StatusCard(status = "Status", message = uiState.message)
+                            Spacer(modifier = Modifier.height(16.dp))
+                            ControlButton(
+                                iconResId = R.drawable.ic_processing,
+                                text = "Processing",
+                                onClick = { /* Disabled */ },
+                                backgroundColor = Color.Gray,
+                                enabled = false
+                            )
+                        }
+                    }
+                    is MainViewModel.UiState.Error -> {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            StatusCard(status = "Error occurred", message = uiState.message, isError = true)
+                            Spacer(modifier = Modifier.height(16.dp))
+                            ControlButton(
+                                iconResId = R.drawable.ic_retry,
+                                text = "Retry",
+                                onClick = onRetryClick,
+                                backgroundColor = Color.Red,
+                                enabled = true
+                            )
+                        }
+                    }
+                    is MainViewModel.UiState.ShowingResponse -> {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            ResponseCard(response = uiState.response, apiProvider = uiState.apiProvider)
+                            Spacer(modifier = Modifier.height(16.dp))
+                            ControlButton(
+                                iconResId = R.drawable.ic_record,
+                                text = "New Query",
+                                onClick = onControlButtonClick,
+                                backgroundColor = MaterialTheme.colorScheme.primary,
+                                enabled = true
+                            )
+                        }
+                    }
+                    is MainViewModel.UiState.ToastMessage -> { /* No UI, handled by Toast above */ }
                 }
-                is MainViewModel.UiState.AwaitingInput -> {
-                    StatusCard(status = "Status", message = "Ready")
-                    ControlButton(
-                        iconResId = R.drawable.ic_record,
-                        text = "Capture",
-                        onClick = onControlButtonClick,
-                        backgroundColor = MaterialTheme.colorScheme.primary,
-                        enabled = true
-                    )
-                }
-                is MainViewModel.UiState.Processing -> {
-                    StatusCard(status = "Status", message = uiState.message)
-                    ControlButton(
-                        iconResId = R.drawable.ic_processing,
-                        text = "Processing",
-                        onClick = { /* Disabled */ },
-                        backgroundColor = Color.Gray,
-                        enabled = false
-                    )
-                }
-                is MainViewModel.UiState.Error -> {
-                    StatusCard(status = "Error occurred", message = uiState.message, isError = true)
-                    ControlButton(
-                        iconResId = R.drawable.ic_retry,
-                        text = "Retry",
-                        onClick = onRetryClick,
-                        backgroundColor = Color.Red,
-                        enabled = true
-                    )
-                }
-                is MainViewModel.UiState.ShowingResponse -> {
-                    ResponseCard(response = uiState.response, apiProvider = uiState.apiProvider)
-                    ControlButton(
-                        iconResId = R.drawable.ic_record,
-                        text = "New Query",
-                        onClick = onControlButtonClick,
-                        backgroundColor = MaterialTheme.colorScheme.primary,
-                        enabled = true
-                    )
-                }
-                is MainViewModel.UiState.ToastMessage -> { /* No UI, handled by Toast above */ }
             }
         }
     }

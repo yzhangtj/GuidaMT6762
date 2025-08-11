@@ -361,7 +361,7 @@ object TtsManager : TextToSpeech.OnInitListener {
     }
     
     fun speak(text: String, onComplete: (() -> Unit)? = null): Boolean {
-        Log.i("GuidaAudioManager", "TtsManager: speak() called with text: '${text.take(50)}${if (text.length > 50) "..." else ""}'")
+        Log.i("GuidaAudioManager", "TtsManager: speak() called with text: '$text'")
         Log.i("GuidaAudioManager", "TtsManager: TTS ready: $isReady, TTS object: ${tts != null}")
         Log.i("GuidaAudioManager", "TtsManager: Current thread: ${Thread.currentThread().name}")
         
@@ -860,5 +860,15 @@ class AudioManager(private val context: Context) {
         toneGenerator?.release()
         // Note: TtsManager is a singleton, don't shutdown here unless this is the last AudioManager instance
         Log.i("GuidaAudioManager", "AudioManager resources released (TTS singleton left running)")
+    }
+
+    fun speakOffline(text: String, onComplete: (() -> Unit)? = null) {
+        Log.i("GuidaAudioManager", "Speaking offline with Android TTS: \"$text\"")
+        val success = TtsManager.speak(text, onComplete)
+        if (!success) {
+            Log.e("GuidaAudioManager", "Offline speech failed to start.")
+            playErrorTone()
+            onComplete?.invoke()
+        }
     }
 } 

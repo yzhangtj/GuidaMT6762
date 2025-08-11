@@ -12,6 +12,7 @@ import java.io.File
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Proxy
+import java.util.concurrent.TimeUnit
 
 class HttpClient {
     companion object {
@@ -30,64 +31,44 @@ class HttpClient {
     }
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-        .writeTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
+        //.proxy(Proxy(Proxy.Type.HTTP, InetSocketAddress("172.20.10.1", 7890)))
+        .connectTimeout(30, TimeUnit.SECONDS) // Increased timeout for proxy
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .eventListener(object : EventListener() {
+            override fun connectStart(call: Call, inetSocketAddress: InetSocketAddress, proxy: Proxy) {
+                super.connectStart(call, inetSocketAddress, proxy)
+                Log.d(TAG, "[CONNECTION-DIAG] connectStart: dest=${inetSocketAddress}, proxy=$proxy")
+            }
+            override fun secureConnectStart(call: Call) {
+                super.secureConnectStart(call)
+                Log.d(TAG, "[CONNECTION-DIAG] secureConnectStart: TLS handshake beginning...")
+            }
+            override fun connectFailed(call: Call, inetSocketAddress: InetSocketAddress, proxy: Proxy, protocol: Protocol?, ioe: IOException) {
+                super.connectFailed(call, inetSocketAddress, proxy, protocol, ioe)
+                Log.e(TAG, "[CONNECTION-DIAG] connectFailed: dest=${inetSocketAddress}, proxy=$proxy", ioe)
+            }
+        })
         .addInterceptor { chain ->
             val originalRequest = chain.request()
-            
-            // Log the request URL and method
             Log.i(TAG, "Making request to: ${originalRequest.url}")
-            Log.i(TAG, "Request method: ${originalRequest.method}")
-            
-            // Add appropriate headers based on the API being called
+
             val newRequest = when {
-                originalRequest.url.toString().contains("moondream.ai") -> {
-                    Log.i(TAG, "Adding X-Moondream-Auth header to Moondream request")
-                    originalRequest.newBuilder()
-                        .addHeader("X-Moondream-Auth", MOONDREAM_API_KEY)
-                        .addHeader("Content-Type", "application/json")
-                        .build()
-                }
                 originalRequest.url.toString().contains("openai.com") -> {
-                    Log.i(TAG, "Adding Authorization header to OpenAI request")
                     originalRequest.newBuilder()
                         .addHeader("Authorization", "Bearer $OPENAI_API_KEY")
                         .addHeader("Content-Type", "application/json")
-                        .addHeader("User-Agent", "GuidaGlassesApp/1.0")
+                        .build()
+                }
+                originalRequest.url.toString().contains("moondream.ai") -> {
+                    originalRequest.newBuilder()
+                        .addHeader("Authorization", "Bearer $MOONDREAM_API_KEY")
+                        .addHeader("Content-Type", "application/json")
                         .build()
                 }
                 else -> originalRequest
             }
-            
-            // Log all headers being sent
-            Log.i(TAG, "Final request headers:")
-            for (i in 0 until newRequest.headers.size) {
-                Log.i(TAG, "  ${newRequest.headers.name(i)}: ${newRequest.headers.value(i)}")
-            }
-            
-            try {
-                val response = chain.proceed(newRequest)
-                Log.i(TAG, "Response received: ${response.code} ${response.message}")
-                response
-            } catch (e: Exception) {
-                Log.e(TAG, "Request failed with exception: ${e.javaClass.simpleName}: ${e.message}")
-                throw e
-            }
-        }
-        .addNetworkInterceptor { chain ->
-            // This runs after DNS resolution, so we can see the actual IP
-            val request = chain.request()
-            Log.i(TAG, "Network interceptor - connecting to: ${request.url}")
-            
-            try {
-                val response = chain.proceed(request)
-                Log.i(TAG, "Network response: ${response.code}")
-                response
-            } catch (e: Exception) {
-                Log.e(TAG, "Network error: ${e.javaClass.simpleName}: ${e.message}")
-                throw e
-            }
+            chain.proceed(newRequest)
         }
         .build()
 
@@ -266,6 +247,8 @@ class HttpClient {
         try {
             Log.i(TAG, "Sending to OpenAI Vision API")
             
+            // NOTE: Removed old direct-connection connectivity tests.
+
             // Check if image file exists and is readable
             if (!imageFile.exists() || !imageFile.canRead()) {
                 onError("Image file not found or cannot be read")
@@ -306,9 +289,6 @@ class HttpClient {
             }
             
             Log.i(TAG, "OpenAI API key validation passed")
-            
-            // Test connectivity to OpenAI before making the actual request
-            testOpenAIConnectivity()
             
             // Use the speech text as the user question, or a default question if no speech
             val userQuestion = if (recognizedText.isNotEmpty()) {
@@ -467,32 +447,7 @@ class HttpClient {
         }
     }
 
-    private fun testOpenAIConnectivity() {
-        try {
-            Log.i(TAG, "Testing connectivity to OpenAI...")
-            
-            // Try to resolve DNS first
-            val url = java.net.URL(OPENAI_API_URL)
-            val host = url.host
-            Log.i(TAG, "Attempting to resolve host: $host")
-            
-            val addresses = java.net.InetAddress.getAllByName(host)
-            Log.i(TAG, "DNS resolution successful. Found ${addresses.size} addresses:")
-            for (address in addresses) {
-                Log.i(TAG, "  - ${address.hostAddress}")
-            }
-            
-            // Test direct connectivity only if not using proxy
-            val socket = java.net.Socket()
-            socket.connect(java.net.InetSocketAddress(host, 443), 5000) // 5 second timeout
-            socket.close()
-            Log.i(TAG, "Direct TCP connection test successful")
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Connectivity test failed: ${e.javaClass.simpleName}: ${e.message}")
-            Log.e(TAG, "This may indicate network restrictions or DNS issues")
-        }
-    }
+    // NOTE: All custom connectivity test functions have been removed.
 
     fun updateServerUrl(newUrl: String) {
         // This method can be used to dynamically update the server URL
