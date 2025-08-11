@@ -448,9 +448,9 @@ class AudioManager(private val context: Context) {
         .build()
     
     // OpenAI TTS configuration
-    //private val openAiApiKey = "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"
-    //private val ttsModel = "gpt-4o-mini-tts"
-    //private val ttsVoice = "coral" // Cheerful and positive voice
+    private val openAiApiKey = "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"
+    private val ttsModel = "gpt-4o-mini-tts"
+    private val ttsVoice = "coral" // Cheerful and positive voice
     
     // PCM Audio configuration for streaming
     private val sampleRate = 24000 // OpenAI TTS PCM sample rate
