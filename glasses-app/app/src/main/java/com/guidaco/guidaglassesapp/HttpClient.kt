@@ -23,11 +23,11 @@ class HttpClient {
         
         // Moondream API configuration
         private const val MOONDREAM_API_URL = "https://api.moondream.ai/v1/query"
-        private const val MOONDREAM_API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXlfaWQiOiI1ODllMmIwNi0yNGNlLTQ3NzQtODk0Ni04NmYyODBkYmY3ZWEiLCJvcmdfaWQiOiJpalo3Z0N4SWM0eDI0ZUdzRkFzeVh2TDhma2VUSzV3bSIsImlhdCI6MTc1MTk3MzM3MSwidmVyIjoxfQ.b2bT7AKSfifNIfwKVboZ41U-ETB7fvnPgF0xPxIC-H0"
+        private const val MOONDREAM_API_KEY = "askgrace"
         
         // OpenAI Vision API configuration
         private const val OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
-        private const val OPENAI_API_KEY = "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"
+        private const val OPENAI_API_KEY = "askgrace"
     }
 
     private val client = OkHttpClient.Builder()
