@@ -26,8 +26,8 @@ class HttpClient {
         private const val MOONDREAM_API_KEY = "askgrace"
         
         // OpenAI Vision API configuration
-        private const val OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
-        private const val OPENAI_API_KEY = "askgrace"
+        //private const val OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
+        //private const val OPENAI_API_KEY = "askgrace"
     }
 
     private val client = OkHttpClient.Builder()
