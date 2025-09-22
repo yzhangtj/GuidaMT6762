@@ -11,6 +11,7 @@ import android.speech.tts.UtteranceProgressListener
 import java.io.File
 import java.io.IOException
 import java.util.*
+import android.util.Log
 
 class AudioManager(private val context: Context) {
     private var mediaRecorder: MediaRecorder? = null

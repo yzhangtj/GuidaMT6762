@@ -6,6 +6,10 @@ import java.io.File
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 class RadarManager {
@@ -15,6 +19,13 @@ class RadarManager {
     private val buffer = mutableListOf<Byte>()
     private var alertManager: AlertManager? = null
 
+    // Executor to offload AlertManager/TargetTracker processing off the reader thread
+    // Use ThreadPoolExecutor so we can inspect the queue for diagnostics
+    private val processingExecutor = ThreadPoolExecutor(
+        1, 1, 0L, TimeUnit.MILLISECONDS,
+        LinkedBlockingQueue<Runnable>()
+    )
+
     companion object {
         // Protocol Definition
         private val HEADER = byteArrayOf(0xAA.toByte(), 0xAA.toByte(), 0xAA.toByte(), 0xAA.toByte())
@@ -23,6 +34,11 @@ class RadarManager {
 
         private const val MIN_FRAME_SIZE = 11 // 4 header + 1 addr + 1 cmd + 2 rsv + 2 len + 1 chk
         private const val TARGET_INFO_PACKET_LENGTH = 6 // 6 bytes per target
+        
+    // Merge thresholds for duplicate detections (pulse radar often gives two entries)
+    // Loosened to reduce false separate entries for close objects
+    private const val MERGE_DISTANCE_THRESHOLD = 50.0f // cm (was 20)
+    private const val MERGE_ANGLE_THRESHOLD = 25.0f // degrees (was 10)
     }
 
     fun setAlertManager(alertManager: AlertManager) {
@@ -51,11 +67,19 @@ class RadarManager {
                 val inputStream = FileInputStream(deviceFile)
                 val readBuffer = ByteArray(256)
                 while (isReading) {
+                    Log.d(tag, "ReaderThread: waiting to read")
                     val bytesRead = inputStream.read(readBuffer)
+                    Log.d(tag, "ReaderThread: read returned $bytesRead")
                     if (bytesRead > 0) {
                         buffer.addAll(readBuffer.take(bytesRead))
-                        processBuffer()
+                        Log.d(tag, "ReaderThread: buffer size after read=${buffer.size}")
+                        try {
+                            processBuffer()
+                        } catch (e: Exception) {
+                            Log.e(tag, "Error in processBuffer", e)
+                        }
                     } else {
+                        Log.d(tag, "ReaderThread: no data, sleeping")
                         Thread.sleep(50) // Wait a bit if no data
                     }
                 }
@@ -99,8 +123,15 @@ class RadarManager {
                         sampleTargets.add(target)
                     }
                     
-                    // Send sample targets to AlertManager
-                    alertManager?.processTargets(sampleTargets)
+                    // Send sample targets to AlertManager via executor so generation can't block
+                    try {
+                        processingExecutor.submit {
+                            alertManager?.processTargets(sampleTargets)
+                        }
+                        Log.d(tag, "SampleData: submitted ${sampleTargets.size} targets to processingExecutor; queue=${processingExecutor.queue.size}")
+                    } catch (e: Exception) {
+                        Log.e(tag, "SampleData: failed to submit to executor", e)
+                    }
                     
                     frameCount++
                     if (frameCount % 10 == 0) {
@@ -117,11 +148,22 @@ class RadarManager {
     }
 
     private fun processBuffer() {
+        Log.d(tag, "processBuffer: enter (bufferSize=${buffer.size})")
         while (buffer.size >= MIN_FRAME_SIZE) {
             val headerIndex = findHeader()
             if (headerIndex == -1) {
-                // No header found, clear buffer to avoid infinite loop on bad data
-                if (buffer.size > HEADER.size) buffer.clear()
+                // No header found: don't clear the entire buffer (that can lose
+                // a partial header). Instead, remove bytes up to keeping the
+                // last HEADER.size-1 bytes so a split header across reads is preserved.
+                if (buffer.size > HEADER.size) {
+                    val keep = HEADER.size - 1
+                    val removeCount = buffer.size - keep
+                    for (i in 0 until removeCount) buffer.removeAt(0)
+                    Log.w(tag, "processBuffer: no header found, removed $removeCount bytes, kept $keep tail bytes (bufferSize=${buffer.size})")
+                } else {
+                    // Buffer is small and no full header yet; just wait for more data.
+                    Log.w(tag, "processBuffer: no header found, buffer too small (${buffer.size}), waiting")
+                }
                 return
             }
 
@@ -144,6 +186,7 @@ class RadarManager {
                 
                 // Validate checksum
                 if (validateChecksum(frameBytes)) {
+                    Log.d(tag, "processBuffer: valid frame of length $totalFrameLength, parsing")
                     parseFrame(frameBytes)
                 } else {
                     Log.w(tag, "Checksum mismatch! Discarding frame. Data: ${frameBytes.joinToString { String.format("%02X", it) }}")
@@ -154,9 +197,11 @@ class RadarManager {
 
             } else {
                 // Not enough data for a full frame yet, wait for more
+                Log.d(tag, "processBuffer: incomplete frame (have ${buffer.size}, need $totalFrameLength), returning")
                 return
             }
         }
+        Log.d(tag, "processBuffer: exit")
     }
 
     private fun findHeader(): Int {
@@ -177,6 +222,7 @@ class RadarManager {
     }
 
     private fun parseFrame(frameData: ByteArray) {
+        Log.d(tag, "parseFrame: start (len=${frameData.size})")
         val commandId = frameData[5]
         if (commandId != COMMAND_ID_TARGET_INFO) {
             Log.d(tag, "Received frame with non-target command ID: $commandId")
@@ -189,7 +235,7 @@ class RadarManager {
         if (numTargets > 0) {
             val targets = mutableListOf<RadarTarget>()
             
-            Log.i(tag, "🎯 Detected $numTargets targets:")
+            Log.i(tag, "Detected $numTargets targets:")
             for (i in 0 until numTargets) {
                 val targetData = payload.sliceArray(i * TARGET_INFO_PACKET_LENGTH until (i + 1) * TARGET_INFO_PACKET_LENGTH)
                 val byteBuffer = ByteBuffer.wrap(targetData).order(ByteOrder.LITTLE_ENDIAN)
@@ -217,12 +263,62 @@ class RadarManager {
                 targets.add(target)
             }
             
-            // Send targets to AlertManager for processing
-            alertManager?.processTargets(targets)
+            // Merge nearby/duplicate detections (pulse radar can report the same object twice)
+            val mergedTargets = mutableListOf<RadarTarget>()
+            for (t in targets) {
+                var merged = false
+                for (mt in mergedTargets) {
+                    val distDiff = kotlin.math.abs(t.distance - mt.distance)
+                    val angleDiff = kotlin.math.abs(t.angle - mt.angle)
+                    if (distDiff <= MERGE_DISTANCE_THRESHOLD && angleDiff <= MERGE_ANGLE_THRESHOLD) {
+                        // Combine by averaging values (simple but effective)
+                        val newDistance = (mt.distance + t.distance) / 2.0f
+                        val newSpeed = (mt.speed + t.speed) / 2.0f
+                        val newAngle = (mt.angle + t.angle) / 2.0f
+                        val newRawDistance = (mt.rawDistance + t.rawDistance) / 2
+                        val newRawSpeed = (mt.rawSpeed + t.rawSpeed) / 2
+                        val newRawAngle = (mt.rawAngle + t.rawAngle) / 2
+
+                        // Update mt in place
+                        val index = mergedTargets.indexOf(mt)
+                        mergedTargets[index] = RadarTarget(
+                            distance = newDistance,
+                            speed = newSpeed,
+                            angle = newAngle,
+                            rawDistance = newRawDistance,
+                            rawSpeed = newRawSpeed,
+                            rawAngle = newRawAngle
+                        )
+                        merged = true
+                        break
+                    }
+                }
+                if (!merged) mergedTargets.add(t)
+            }
+
+            if (mergedTargets.size != targets.size) {
+                Log.d(tag, "parseFrame: merged ${targets.size} -> ${mergedTargets.size} targets")
+                mergedTargets.forEachIndexed { idx, mt ->
+                    Log.i(tag, "  -> Merged[$idx]: Distance=${"%.2f".format(mt.distance)}cm (raw:${mt.rawDistance}), Speed=${"%.2f".format(mt.speed)}m/s (raw:${mt.rawSpeed}), Angle=${"%.2f".format(mt.angle)}° (raw:${mt.rawAngle})")
+                }
+            }
+
+            // Send merged targets to AlertManager for processing on the processingExecutor so parsing stays fast
+            try {
+                processingExecutor.submit { alertManager?.processTargets(mergedTargets) }
+                Log.d(tag, "parseFrame: submitted ${mergedTargets.size} targets to processingExecutor; queue=${processingExecutor.queue.size}")
+            } catch (e: Exception) {
+                Log.e(tag, "parseFrame: failed to submit to executor", e)
+            }
         }
+        Log.d(tag, "parseFrame: end")
     }
 
     fun stop() {
         isReading = false
+        try {
+            processingExecutor.shutdownNow()
+        } catch (ignored: Exception) {
+        }
     }
-} 
+}

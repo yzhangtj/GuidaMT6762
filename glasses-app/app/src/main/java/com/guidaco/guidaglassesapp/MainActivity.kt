@@ -266,8 +266,8 @@ class MainActivity : ComponentActivity() {
     // Test WiFi connection function
     private fun testWifiConnection() {
         // Replace these with your actual WiFi credentials
-        val ssid = "3609"  // Your actual WiFi name
-        val password = "66668888"  // Your actual WiFi password
+        val ssid = "19-3"  // Your actual WiFi name
+        val password = "13813355882"  // Your actual WiFi password
         
         android.util.Log.i("guida", "Testing WiFi connection to: $ssid")
         viewModel.connectToWifi(ssid, password)

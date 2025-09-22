@@ -95,22 +95,25 @@ class TargetTracker {
     
     companion object {
         // Distance validation - keep tight since position is accurate
-        private const val MAX_DISTANCE_DIFF = 20.0f  // cm - position is reliable
+        // Loosen distance gate to match RadarManager merging
+        private const val MAX_DISTANCE_DIFF = 60.0f  // cm - increased from 20
         
         // Speed validation - keep loose since speed is unreliable
         private const val MAX_SPEED_DIFF = 8.0f  // m/s - reduced from 10.0 but still loose
         
         // Angle validation - moderate since it's only good for left/right indication
-        private const val MAX_ANGLE_DIFF = 25.0f  // degrees - reduced from 30° to tighten
+    // Loosen angle gate to match RadarManager merging
+    private const val MAX_ANGLE_DIFF = 30.0f  // degrees - increased from 25
         
         // Track stability requirements - increased for better filtering
-        private const val MIN_HIT_COUNT = 4  // hits - increased from 3 for stability
-        private const val MAX_MISS_COUNT = 2  // misses - keep at 2 for quick removal
-        private const val MIN_CONFIDENCE = 0.6f  // confidence - increased from 0.5
+    // Reduce strictness so merged detections are accepted faster
+    private const val MIN_HIT_COUNT = 2  // hits - reduced from 4
+    private const val MAX_MISS_COUNT = 3  // misses - allow a few more misses
+    private const val MIN_CONFIDENCE = 0.4f  // confidence - reduced from 0.6
         private const val TRACK_TIMEOUT_MS = 1500L  // ms - keep at 1500ms
         
         // Rolling average window size
-        private const val AVERAGE_WINDOW_SIZE = 5  // number of readings to average
+        private const val AVERAGE_WINDOW_SIZE = 3  // number of readings to average (smaller => faster response)
     }
     
     /**

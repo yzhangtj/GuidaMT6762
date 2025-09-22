@@ -246,43 +246,64 @@ private fun DrawScope.drawRadarView(
     
     // Draw targets
     targets.forEach { target ->
+        // Validate distance (avoid NaN/invalid values)
+        val clampedDistance = when {
+            target.distance.isFinite().not() -> return@forEach
+            target.distance <= minDistance -> minDistance
+            target.distance > maxDistance -> maxDistance
+            else -> target.distance
+        }
+
         // Nonlinear distance mapping using square root for better close-range precision
-        val normalizedDistance = sqrt((target.distance - minDistance) / (maxDistance - minDistance))
+        val normalizedDistance = try {
+            val denom = (maxDistance - minDistance)
+            if (denom <= 0f) 0f else sqrt((clampedDistance - minDistance) / denom)
+        } catch (e: Exception) {
+            // If anything goes wrong, skip this target
+            return@forEach
+        }
+
         val radius = normalizedDistance * (height * 0.4f)
-        
+
         // Map radar angle (120°) to view angle (180°): -60° to +60° → -90° to +90°
-        // Radar angle range: -60° to +60° (120° total)
-        // View angle range: -90° to +90° (180° total)
         val mappedAngle = target.angle * (180f / 120f) // Scale factor: 1.5
-        
+
         // Convert mapped angle to position
         val angleRad = Math.toRadians(mappedAngle.toDouble())
         val targetX = centerX + (radius * sin(angleRad)).toFloat()
         val targetY = height * 0.8f - (radius * cos(angleRad)).toFloat()
-        
+
+        // Validate computed coordinates
+        if (!targetX.isFinite() || !targetY.isFinite()) {
+            // Skip drawing invalid points
+            return@forEach
+        }
+
         // Color based on speed
         val speedColor = getSpeedColor(target.speed)
-        
-        // Draw target with better visibility
+
+        // Draw target with better visibility (use safe offsets)
+        val centerOffset = Offset(targetX, targetY)
+
         drawCircle(
             color = speedColor,
             radius = 10.dp.toPx(),
-            center = Offset(targetX, targetY)
+            center = centerOffset
         )
-        
+
         // Draw larger target circle for better visibility
         drawCircle(
             color = Color.White.copy(alpha = 0.9f),
             radius = 14.dp.toPx(),
-            center = Offset(targetX, targetY),
+            center = centerOffset,
             style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
         )
-        
+
         // Add small confidence indicator
         drawCircle(
             color = Color.Yellow.copy(alpha = 0.6f),
             radius = 4.dp.toPx(),
-            center = Offset(targetX, targetY)
+            center = centerOffset
         )
     }
 }
