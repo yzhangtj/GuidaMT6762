@@ -22,6 +22,9 @@
     <!-- Camera features -->
     <uses-feature android:name="android.hardware.camera" android:required="true" />
     <uses-feature android:name="android.hardware.microphone" android:required="true" />
+    
+    <!-- Sensor permissions -->
+    <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
 
     <!-- Bluetooth permissions for Android 12+ and legacy support -->
     <uses-permission android:name="android.permission.BLUETOOTH" />
@@ -85,6 +88,13 @@
             android:theme="@style/Theme.GuidaApp0606"
             android:parentActivityName=".RadarViewActivity"
             android:screenOrientation="portrait" />
+        
+        <activity
+            android:name=".SensorCliProbeActivity"
+            android:label="Sensor Probe"
+            android:theme="@style/Theme.GuidaApp0606"
+            android:screenOrientation="portrait"
+            android:exported="true" />
     </application>
 
 </manifest>
