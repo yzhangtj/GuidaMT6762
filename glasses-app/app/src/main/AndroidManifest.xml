@@ -95,6 +95,13 @@
             android:theme="@style/Theme.GuidaApp0606"
             android:screenOrientation="portrait"
             android:exported="true" />
+
+        <activity
+            android:name=".RadarDebugActivity"
+            android:label="Radar Debug"
+            android:theme="@style/Theme.GuidaApp0606"
+            android:screenOrientation="portrait"
+            android:exported="true" />
     </application>
 
 </manifest>

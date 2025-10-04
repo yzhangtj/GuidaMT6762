@@ -227,7 +227,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Test WiFi connection (for development)
     fun testWifiConnection() {
         // Replace with your actual WiFi credentials
-        connectToWifi("3609", "66668888")
+        connectToWifi("19-3", "13813355882")
     }
     
     override fun onCleared() {
