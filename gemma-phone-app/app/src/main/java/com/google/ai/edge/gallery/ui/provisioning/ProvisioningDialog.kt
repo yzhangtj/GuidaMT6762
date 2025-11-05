@@ -27,6 +27,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -44,6 +50,22 @@ fun ProvisioningDialog(
   val devices by viewModel.devices.collectAsState()
   val statusMessage by viewModel.status.collectAsState()
   val wifiState by viewModel.wifiState.collectAsState()
+
+  val context = LocalContext.current
+  val permissionLauncher = rememberLauncherForActivityResult(
+    ActivityResultContracts.RequestMultiplePermissions()
+  ) { perms: Map<String, Boolean> ->
+    val granted = perms[Manifest.permission.BLUETOOTH_CONNECT] == true || perms[Manifest.permission.BLUETOOTH_SCAN] == true
+    if (granted) {
+      viewModel.refreshDevices()
+    } else {
+      viewModel.setStatus("Bluetooth permission required")
+    }
+  }
+
+  val hasBluetoothPermission =
+    ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED ||
+    ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
 
   var selectedDevice by remember(devices) { mutableStateOf<BluetoothDevice?>(devices.firstOrNull()) }
   var ssid by remember { mutableStateOf(viewModel.getSuggestedSsid().orEmpty()) }
@@ -111,6 +133,19 @@ fun ProvisioningDialog(
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
           OutlinedButton(onClick = { viewModel.refreshDevices() }) {
             Text("Refresh devices")
+          }
+          if (!hasBluetoothPermission) {
+            OutlinedButton(onClick = {
+              // Request Bluetooth permissions (both CONNECT and SCAN where available)
+              val perms = mutableListOf<String>()
+              perms.add(Manifest.permission.BLUETOOTH_CONNECT)
+              perms.add(Manifest.permission.BLUETOOTH_SCAN)
+              // Also request fine location on older Android versions where required
+              perms.add(Manifest.permission.ACCESS_FINE_LOCATION)
+              permissionLauncher.launch(perms.toTypedArray())
+            }) {
+              Text("Grant Bluetooth permission")
+            }
           }
         }
 

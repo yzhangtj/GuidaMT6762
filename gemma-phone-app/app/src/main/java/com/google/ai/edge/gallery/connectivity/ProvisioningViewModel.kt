@@ -52,7 +52,8 @@ constructor(application: Application) : AndroidViewModel(application) {
 
   fun sendCredentials(device: BluetoothDevice, ssid: String, password: String) {
     _status.value = "Sending credentials to ${device.name}..."
-    bluetoothClient.sendCredentials(device, ssid, password) { success, message ->
+    // Pass application context so the client can compute and append the phone-local URL token
+    bluetoothClient.sendCredentials(device, ssid, password, getApplication()) { success, message ->
       _status.value = message
       if (success) {
         refreshDevices()
