@@ -40,6 +40,9 @@ import android.bluetooth.le.BluetoothLeAdvertiser
 import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalPermissionsApi::class)
 class MainActivity : ComponentActivity() {
@@ -47,6 +50,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var viewModel: MainViewModel
     private var bluetoothWifiServer: BluetoothWifiServer? = null
     private lateinit var audioManager: AudioManager
+    private lateinit var settingsDataStore: SettingsDataStore
     private var f1LongPressHandled = false
     private var f1DownTime: Long = 0L
     private val f1LongPressTimeout = 500L // ms
@@ -91,7 +95,9 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 Toast.makeText(this, "Waiting for phone to send WiFi credentials via Bluetooth...", Toast.LENGTH_LONG).show()
-                bluetoothWifiServer = BluetoothWifiServer { ssid, password ->
+                settingsDataStore = SettingsDataStore(this@MainActivity)
+
+                bluetoothWifiServer = BluetoothWifiServer { ssid, password, phoneUrl ->
                     runOnUiThread {
                         try {
                             // DEBUG: Log what we received in MainActivity
@@ -117,6 +123,20 @@ class MainActivity : ComponentActivity() {
                             Toast.makeText(this, "Received WiFi credentials! Connecting...", Toast.LENGTH_SHORT).show()
                             android.util.Log.i("guida", "Calling viewModel.connectToWifi with SSID='$ssid', password='$password'")
                             viewModel.connectToWifi(ssid, password)
+
+                            // If phone sent its API URL, persist it and enable phone routing
+                            if (!phoneUrl.isNullOrBlank()) {
+                                android.util.Log.i("guida", "Received Phone API URL over Bluetooth: $phoneUrl")
+                                CoroutineScope(Dispatchers.IO).launch {
+                                    try {
+                                        settingsDataStore.setPhoneApiUrl(phoneUrl)
+                                        settingsDataStore.setUsePhoneGemma(true)
+                                        android.util.Log.i("guida", "Phone API URL persisted and phone routing enabled")
+                                    } catch (e: Exception) {
+                                        android.util.Log.e("guida", "Failed to persist phone API URL: ${e.message}", e)
+                                    }
+                                }
+                            }
                         } catch (e: Exception) {
                             android.util.Log.e("guida", "Error handling received credentials: ${e.message}", e)
                             audioManager.speak("Error handling credentials: ${e.message}")

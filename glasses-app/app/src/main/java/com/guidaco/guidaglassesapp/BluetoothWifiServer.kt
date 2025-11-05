@@ -10,7 +10,11 @@ import java.util.UUID
 import kotlin.concurrent.thread
 
 class BluetoothWifiServer(
-    private val onCredentialsReceived: (ssid: String, password: String) -> Unit
+    /**
+     * onCredentialsReceived: (ssid, password, optionalPhoneApiUrl)
+     * The phone API URL may be null if the sender did not include it.
+     */
+    private val onCredentialsReceived: (ssid: String, password: String, phoneApiUrl: String?) -> Unit
 ) {
     private val adapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
     private var serverSocket: BluetoothServerSocket? = null
@@ -64,25 +68,29 @@ class BluetoothWifiServer(
                     for (i in parts.indices) {
                         Log.i("BluetoothWifiServer", "Part[$i]: '${parts[i]}'")
                     }
-                    
-                if (parts.size == 2) {
+                    // Support either: "ssid,password" OR "ssid,password,http://host:port"
+                    if (parts.size >= 2) {
                         val ssid = parts[0].trim()
                         val password = parts[1].trim()
+                        val phoneUrlRaw = parts.getOrNull(2)?.trim()
+                        val phoneUrl = if (!phoneUrlRaw.isNullOrBlank() && (phoneUrlRaw.startsWith("http://") || phoneUrlRaw.startsWith("https://"))) phoneUrlRaw else null
+
                         Log.i("BluetoothWifiServer", "=== FINAL PARSED CREDENTIALS ===")
                         Log.i("BluetoothWifiServer", "SSID: '$ssid' (length: ${ssid.length})")
                         Log.i("BluetoothWifiServer", "Password: '$password' (length: ${password.length})")
-                        
+                        Log.i("BluetoothWifiServer", "Phone API URL: ${phoneUrl ?: "<none>"}")
+
                         if (ssid.isEmpty()) {
                             Log.e("BluetoothWifiServer", "ERROR: Parsed SSID is empty!")
                         }
                         if (password.isEmpty()) {
                             Log.e("BluetoothWifiServer", "ERROR: Parsed password is empty!")
                         }
-                        
+
                         Log.i("BluetoothWifiServer", "Calling onCredentialsReceived...")
-                    onCredentialsReceived(ssid, password)
+                        onCredentialsReceived(ssid, password, phoneUrl)
                     } else {
-                        Log.e("BluetoothWifiServer", "Invalid credentials format - expected 2 parts, got ${parts.size}")
+                        Log.e("BluetoothWifiServer", "Invalid credentials format - expected at least 2 parts, got ${parts.size}")
                         Log.e("BluetoothWifiServer", "Parts were: $parts")
                     }
                 } else {

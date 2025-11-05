@@ -12,6 +12,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import android.util.Log
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     
@@ -22,6 +24,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val radarManager = RadarManager()
     private val alertManager = AlertManager() // Add AlertManager
     private val httpClient = HttpClient()
+    private val settingsDataStore = SettingsDataStore(application)
+    // Cache latest phone API URL observed to avoid suspending calls inside collectors
+    @Volatile
+    private var latestPhoneApiUrl: String? = null
     private val wifiManager = GuidaWifiManager(application)
     private val audioManager = AudioManager(application)
     private var isListening = false
@@ -38,6 +44,67 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         radarManager.setAlertManager(alertManager)
         // Start reading from the radar as soon as the ViewModel is created
         radarManager.start()
+
+        // Observe phone API URL in the background and update HttpClient when it changes
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                settingsDataStore.phoneApiUrl.collect { url ->
+                    latestPhoneApiUrl = url
+                    if (!url.isNullOrBlank()) {
+                        Log.i("guida", "MainViewModel observed phoneApiUrl change: $url - updating HttpClient")
+                        httpClient.updateServerUrl(url)
+                    } else {
+                        Log.i("guida", "MainViewModel observed phoneApiUrl cleared")
+                        httpClient.updateServerUrl("")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("guida", "Error collecting phoneApiUrl: ${e.message}", e)
+            }
+        }
+
+        // Observe WiFi connection state and probe phone API URL once after connection
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                wifiState.collect { state ->
+                    if (state is GuidaWifiManager.WifiState.Connected) {
+                        try {
+                            // Use cached latestPhoneApiUrl to avoid suspending calls here
+                            val url = latestPhoneApiUrl
+                            if (!url.isNullOrBlank()) {
+                                Log.i("guida", "WiFi connected. Probing cached phone API URL: $url")
+                                httpClient.probePhoneUrl(url) { ok, endpoint ->
+                                    if (ok) {
+                                        Log.i("guida", "Phone API reachable at $endpoint")
+                                        httpClient.updateServerUrl(url)
+                                    } else {
+                                        Log.w("guida", "Phone API not reachable: $endpoint — clearing stored phone URL and disabling phone routing")
+                                        try {
+                                            // clear persisted settings asynchronously (DataStore setters are suspend)
+                                            CoroutineScope(Dispatchers.IO).launch {
+                                                try {
+                                                    settingsDataStore.setPhoneApiUrl(null)
+                                                    settingsDataStore.setUsePhoneGemma(false)
+                                                    latestPhoneApiUrl = null
+                                                } catch (e: Exception) {
+                                                    Log.e("guida", "Failed to clear phone settings: ${e.message}", e)
+                                                }
+                                            }
+                                        } catch (e: Exception) {
+                                            Log.e("guida", "Failed to schedule clearing phone settings: ${e.message}", e)
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.e("guida", "Error scheduling phone URL probe: ${e.message}", e)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("guida", "Error collecting wifiState: ${e.message}", e)
+            }
+        }
     }
 
     fun initialize(lifecycleOwner: LifecycleOwner) {

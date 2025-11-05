@@ -18,6 +18,11 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import com.guidaco.guidaglassesapp.ui.theme.GuidaGlassesAppTheme
 import kotlinx.coroutines.launch
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 
 class SettingsActivity : ComponentActivity() {
     private lateinit var settingsDataStore: SettingsDataStore
@@ -48,10 +53,14 @@ fun SettingsScreen(
     
     val speechVolume by settingsDataStore.speechVolume.collectAsState(initial = 1.0f)
     val speechRate by settingsDataStore.speechRate.collectAsState(initial = 1.0f)
+    val phoneApiUrlFlow by settingsDataStore.phoneApiUrl.collectAsState(initial = null)
+    val usePhoneGemmaFlow by settingsDataStore.usePhoneGemma.collectAsState(initial = false)
     
     var volumeSliderValue by remember { mutableFloatStateOf(speechVolume) }
     var rateSliderValue by remember { mutableFloatStateOf(speechRate) }
     var showSavedMessage by remember { mutableStateOf(false) }
+    var phoneUrlText by remember { mutableStateOf(phoneApiUrlFlow ?: "") }
+    var usePhoneGemma by remember { mutableStateOf(usePhoneGemmaFlow) }
     
     LaunchedEffect(speechVolume) {
         volumeSliderValue = speechVolume
@@ -178,6 +187,9 @@ fun SettingsScreen(
                     scope.launch {
                         settingsDataStore.setSpeechVolume(volumeSliderValue)
                         settingsDataStore.setSpeechRate(rateSliderValue)
+                        // Persist phone settings as well
+                        settingsDataStore.setPhoneApiUrl(phoneUrlText.takeIf { it.isNotBlank() })
+                        settingsDataStore.setUsePhoneGemma(usePhoneGemma)
                         showSavedMessage = true
                     }
                 },
@@ -221,6 +233,48 @@ fun SettingsScreen(
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+            }
+
+            // Phone Gemma Settings
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "Phone Gemma (local)",
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(text = "Use Phone Gemma (preferred)")
+                        Switch(checked = usePhoneGemma, onCheckedChange = { usePhoneGemma = it }, colors = SwitchDefaults.colors())
+                    }
+
+                    OutlinedTextField(
+                        value = phoneUrlText,
+                        onValueChange = { phoneUrlText = it },
+                        label = { Text("Phone API URL (optional)") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Text(
+                        text = "If your phone is acting as a hotspot, a typical URL is http://192.168.43.1:5000. When provided, the glasses will try the phone-local service first and fall back to the cloud if it is unreachable.",
+                        style = MaterialTheme.typography.bodySmall
                     )
                 }
             }

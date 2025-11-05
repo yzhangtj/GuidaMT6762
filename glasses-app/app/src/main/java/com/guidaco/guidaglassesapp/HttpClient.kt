@@ -110,6 +110,17 @@ class HttpClient {
         }
         .build()
 
+    // Optional short-timeout client for phone-local calls
+    private val phoneClient = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .build()
+
+    // If the phone API URL is set (via SettingsDataStore), requests will be routed here first.
+    @Volatile
+    private var phoneApiUrl: String? = null
+
     fun sendImageAndText(
         imageFile: File,
         recognizedText: String,
@@ -119,7 +130,31 @@ class HttpClient {
         Log.i(TAG, "Preparing to send image: ${imageFile.name}, text: $recognizedText")
         Log.i("GuidaUpload", "Preparing to send image: ${imageFile.name}, text: $recognizedText")
         
-        // Route to appropriate API based on current provider
+        // If phone-local Gemma URL is configured, try it first.
+        val localUrl = phoneApiUrl
+        if (!localUrl.isNullOrBlank()) {
+            Log.i(TAG, "Attempting to use phone-local Gemma at $localUrl")
+            sendToPhoneApp(imageFile, recognizedText,
+                { response -> onSuccess(response, "Phone Gemma") },
+                { phoneErr ->
+                    Log.w(TAG, "Phone Gemma failed: $phoneErr - falling back to cloud providers")
+                    // Fallback to configured cloud provider
+                    routeToCloudProviders(imageFile, recognizedText, onSuccess, onError)
+                }
+            )
+            return
+        }
+
+        // No phone URL configured, route to configured cloud provider
+        routeToCloudProviders(imageFile, recognizedText, onSuccess, onError)
+    }
+
+    private fun routeToCloudProviders(
+        imageFile: File,
+        recognizedText: String,
+        onSuccess: (String, String) -> Unit,
+        onError: (String) -> Unit
+    ) {
         when {
             USE_QWEN == true -> {
                 Log.i(TAG, "Using Qwen Vision API")
@@ -694,6 +729,137 @@ class HttpClient {
 
     fun updateServerUrl(newUrl: String) {
         // This method can be used to dynamically update the server URL
-        Log.i(TAG, "Server URL updated to: $newUrl")
+        val trimmed = newUrl.trim()
+        phoneApiUrl = if (trimmed.isEmpty()) null else trimmed
+        Log.i(TAG, "Server URL updated to: $phoneApiUrl")
+    }
+
+    /**
+     * Send to phone-local Gemma service. If PHONE API URL is not set, calls onError immediately.
+     * Expected endpoint: {phoneApiUrl}/v1/gemma/vision (POST, multipart form with 'image' file and 'question' field)
+     */
+    private fun sendToPhoneApp(
+        imageFile: File,
+        recognizedText: String,
+        onSuccess: (String) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val base = phoneApiUrl
+        if (base.isNullOrBlank()) {
+            onError("Phone API URL not configured")
+            return
+        }
+
+        try {
+            if (!imageFile.exists() || !imageFile.canRead()) {
+                onError("Image file not found or cannot be read")
+                return
+            }
+
+            val compressed = compressImage(imageFile)
+            val imageBody = RequestBody.create("image/jpeg".toMediaTypeOrNull(), compressed)
+
+            val multipart = MultipartBody.Builder().setType(MultipartBody.FORM)
+                .addFormDataPart("question", recognizedText)
+                .addFormDataPart("image", imageFile.name, imageBody)
+                .build()
+
+            val endpoint = base.trimEnd('/') + "/v1/gemma/vision"
+            val request = Request.Builder()
+                .url(endpoint)
+                .post(multipart)
+                .build()
+
+            Log.i(TAG, "Sending request to phone Gemma: $endpoint")
+            phoneClient.newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    Log.e(TAG, "Phone Gemma request failed", e)
+                    onError("Phone Gemma request failed: ${e.message}")
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    val body = response.body?.string() ?: ""
+                    Log.i(TAG, "Phone Gemma response: ${response.code} - $body")
+                    if (response.isSuccessful) {
+                        try {
+                            // Try to extract a sensible answer field
+                            val json = JSONObject(body)
+                            val answer = when {
+                                json.has("answer") -> json.optString("answer")
+                                json.has("result") -> json.optString("result")
+                                json.has("response") -> json.optString("response")
+                                else -> body
+                            }
+                            onSuccess(answer)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error parsing phone response: ${e.message}", e)
+                            onSuccess(body)
+                        }
+                    } else {
+                        onError("Phone Gemma API error: ${response.code} - $body")
+                    }
+                }
+            })
+        } catch (e: Exception) {
+            Log.e(TAG, "Error preparing Phone Gemma request: ${e.message}", e)
+            onError("Phone Gemma preparation error: ${e.message}")
+        }
+    }
+
+    /**
+     * Probe the given phone API base URL for a healthy Gemma endpoint.
+     * Calls onResult(true, endpoint) if any of the probe endpoints responds with 2xx/3xx.
+     * Otherwise calls onResult(false, errorMessage).
+     */
+    fun probePhoneUrl(baseUrl: String, onResult: (Boolean, String?) -> Unit) {
+        // Normalize
+        val trimmed = baseUrl.trim().trimEnd('/')
+        val candidates = listOf(
+            "$trimmed/v1/gemma/health",
+            "$trimmed/health",
+            trimmed
+        )
+
+        // Short timeout client for probes
+        val probeClient = phoneClient.newBuilder()
+            .connectTimeout(3, TimeUnit.SECONDS)
+            .readTimeout(3, TimeUnit.SECONDS)
+            .writeTimeout(3, TimeUnit.SECONDS)
+            .build()
+
+        // Try candidates sequentially
+        fun tryNext(index: Int) {
+            if (index >= candidates.size) {
+                onResult(false, "No reachable endpoint for $baseUrl")
+                return
+            }
+            val endpoint = candidates[index]
+            try {
+                val request = Request.Builder().url(endpoint).get().build()
+                probeClient.newCall(request).enqueue(object : Callback {
+                    override fun onFailure(call: Call, e: IOException) {
+                        Log.w(TAG, "Probe failed for $endpoint: ${e.message}")
+                        tryNext(index + 1)
+                    }
+
+                    override fun onResponse(call: Call, response: Response) {
+                        val code = response.code
+                        response.close()
+                        if (code in 200..399) {
+                            Log.i(TAG, "Probe success for $endpoint (code=$code)")
+                            onResult(true, endpoint)
+                        } else {
+                            Log.w(TAG, "Probe non-OK for $endpoint (code=$code)")
+                            tryNext(index + 1)
+                        }
+                    }
+                })
+            } catch (e: Exception) {
+                Log.w(TAG, "Probe error for ${candidates[index]}: ${e.message}")
+                tryNext(index + 1)
+            }
+        }
+
+        tryNext(0)
     }
 } 

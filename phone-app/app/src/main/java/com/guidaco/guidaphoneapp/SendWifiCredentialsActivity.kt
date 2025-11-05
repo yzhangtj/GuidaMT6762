@@ -668,7 +668,7 @@ class SendWifiCredentialsActivity : ComponentActivity() {
                         Log.i(TAG, "About to send Password: '$password' (length: ${password.length})")
                         Log.i(TAG, "To device: ${device.name} (${device.address})")
                         
-                        bluetoothWifiClient.sendCredentials(device, ssid, password) { success, message ->
+                        bluetoothWifiClient.sendCredentials(this@SendWifiCredentialsActivity, device, ssid, password) { success, message ->
                             runOnUiThread {
                                 Log.i(TAG, "Credentials sending result: success=$success, message=$message")
                                 isSendingCredentials = false

@@ -3,6 +3,9 @@ package com.guidaco.guidaphoneapp
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothSocket
+import android.content.Context
+import android.net.wifi.WifiManager
+import android.text.format.Formatter
 import android.util.Log
 import java.io.OutputStreamWriter
 import java.util.UUID
@@ -12,7 +15,12 @@ class BluetoothWifiClient {
     private val adapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
     private val serviceUUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB") // SPP UUID
 
-    fun sendCredentials(device: BluetoothDevice, ssid: String, password: String, onResult: (Boolean, String) -> Unit) {
+    /**
+     * Send WiFi credentials to the glasses device over Bluetooth SPP.
+     * This method now also appends the phone's local HTTP URL (if discoverable) as a third token so the glasses
+     * can call the on-phone Gemma service directly. The URL is formed as http://<local-ip>:5000 by default.
+     */
+    fun sendCredentials(context: Context, device: BluetoothDevice, ssid: String, password: String, onResult: (Boolean, String) -> Unit) {
         // DEBUG: Log exactly what we're about to send
         Log.i("BluetoothWifiClient", "=== SENDING CREDENTIALS DEBUG ===")
         Log.i("BluetoothWifiClient", "SSID parameter: '$ssid' (length: ${ssid.length})")
@@ -62,7 +70,16 @@ class BluetoothWifiClient {
                 Log.i("BluetoothWifiClient", "Connected! Preparing to send credentials...")
                 
                 val writer = OutputStreamWriter(socket.outputStream)
-                val message = "$ssid,$password"
+
+                // Compute a local HTTP URL for the phone. Try WifiManager -> connectionInfo.ipAddress, else fallback to common hotspot IP.
+                val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                val ipInt = wifiManager?.connectionInfo?.ipAddress ?: 0
+                val ipStr = if (ipInt != 0) Formatter.formatIpAddress(ipInt) else "192.168.43.1"
+                val port = 5000
+                val phoneUrl = "http://$ipStr:$port"
+
+                // Message format: ssid,password[,phoneUrl]
+                val message = "$ssid,$password,$phoneUrl"
                 
                 // DEBUG: Log exactly what we're sending
                 Log.i("BluetoothWifiClient", "=== FINAL MESSAGE TO SEND ===")
