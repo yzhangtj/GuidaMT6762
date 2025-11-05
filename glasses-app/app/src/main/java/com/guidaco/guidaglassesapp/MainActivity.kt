@@ -144,10 +144,7 @@ class MainActivity : ComponentActivity() {
         val speechRecognitionManager = SpeechRecognitionManager(this)
         viewModel.setSpeechRecognitionManager(speechRecognitionManager)
         
-        // Test TTS after 2 seconds to verify it works
-        Handler(Looper.getMainLooper()).postDelayed({
-            audioManager.testAndroidTts("Offline synthesis now works.")
-        }, 2000)
+        // Removed offline TTS test; online TTS is triggered via buttons (F2/Volume Up)
         setContent {
             GuidaGlassesAppTheme {
                 val permissionsState = rememberMultiplePermissionsState(
@@ -203,7 +200,7 @@ class MainActivity : ComponentActivity() {
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         android.util.Log.i("guida", "onKeyDown called with keyCode: $keyCode")
         when (keyCode) {
-            android.view.KeyEvent.KEYCODE_F1 -> {
+            android.view.KeyEvent.KEYCODE_F2 -> {
                 if (event?.repeatCount == 0) {
                     f1LongPressHandled = false
                     f1DownTime = System.currentTimeMillis()
@@ -211,8 +208,8 @@ class MainActivity : ComponentActivity() {
                 }
                 return true
             }
-            android.view.KeyEvent.KEYCODE_F2 -> {
-                android.util.Log.i("guida", "F2 button pressed")
+            android.view.KeyEvent.KEYCODE_F3 -> {
+                android.util.Log.i("guida", "F3 button pressed")
                 viewModel.onF2ButtonPressed()
                 return true
             }
@@ -239,12 +236,12 @@ class MainActivity : ComponentActivity() {
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
         android.util.Log.i("guida", "onKeyUp called with keyCode: $keyCode")
         when (keyCode) {
-            android.view.KeyEvent.KEYCODE_F1,
             android.view.KeyEvent.KEYCODE_F2,
+            android.view.KeyEvent.KEYCODE_F3,
             android.view.KeyEvent.KEYCODE_VOLUME_UP,
             android.view.KeyEvent.KEYCODE_VOLUME_DOWN,
             android.view.KeyEvent.KEYCODE_POWER -> {
-                if (keyCode == android.view.KeyEvent.KEYCODE_F1) {
+                if (keyCode == android.view.KeyEvent.KEYCODE_F2) {
                     handler.removeCallbacks(f1LongPressRunnable)
                     if (!f1LongPressHandled) {
                         // Short press: trigger capture + speech recognition

@@ -349,6 +349,22 @@ class SpeechRecognitionManager(private val context: Context) {
         }
         currentContinuation = null
     }
+
+    /**
+     * Return the best available recognized text immediately without waiting for coroutine completion.
+     * This is used when the UI requests an immediate stop (second button press) and needs text now.
+     */
+    fun drainFinalText(): String? {
+        val finalText = when {
+            accumulatedText.isNotEmpty() -> accumulatedText
+            lastPartialResult.isNotEmpty() -> lastPartialResult
+            else -> null
+        }
+        // Reset buffers so next session starts clean
+        accumulatedText = ""
+        lastPartialResult = ""
+        return finalText
+    }
     
     fun isListening(): Boolean = isListening
     

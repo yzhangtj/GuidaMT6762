@@ -29,6 +29,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var lastCapturedImage: File? = null
     private var lastRecognizedText: String? = null
     private var speechJob: Job? = null
+    private var isSpeakingResponse = false
 
     val wifiState: StateFlow<GuidaWifiManager.WifiState> = wifiManager.wifiState
 
@@ -58,9 +59,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onF1ButtonPressed() {
         Log.i("guida", "[MainViewModel] onF1ButtonPressed called. Current state: ${_uiState.value}, isListening: $isListening")
+        if (isSpeakingResponse) {
+            Log.i("guida", "[MainViewModel] Ignored F1: currently speaking response")
+            return
+        }
         if (!isListening) {
             // Start capture and listening
-            audioManager.speakOffline("Capturing image and starting speech recognition")
+            audioManager.playUiNotificationTone()
             _uiState.value = UiState.Processing("Capturing image and starting speech recognition...")
             cameraManager.captureImage(
                 onImageCaptured = { file ->
@@ -95,26 +100,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         } else {
             // Stop listening and send data
-            audioManager.speakOffline("Stopping speech recognition and sending data")
+            audioManager.playUiNotificationTone()
             _uiState.value = UiState.Processing("Stopping speech recognition...")
             
-            // Stop the speech recognition
+            // Stop the speech recognition immediately and drain best text
             speechRecognitionManager?.stopListening()
-            
-            // Wait for the speech job to complete, then send data
-            speechJob?.let { job ->
-                CoroutineScope(Dispatchers.Main).launch {
-                    job.join() // Wait for speech recognition to complete
-            isListening = false
-                    _uiState.value = UiState.Processing("Speech stopped. Sending data to server...")
-                    sendDataToServer()
-                }
-            } ?: run {
-                // No speech job running, send data immediately
-                isListening = false
-                _uiState.value = UiState.Processing("Sending data to server...")
-            sendDataToServer()
+            val drained = speechRecognitionManager?.drainFinalText()
+            if (!drained.isNullOrEmpty()) {
+                lastRecognizedText = drained
             }
+            isListening = false
+
+            // Cancel any pending speech job
+            speechJob?.cancel()
+            speechJob = null
+
+            _uiState.value = UiState.Processing("Speech stopped. Sending data to server...")
+            sendDataToServer()
         }
     }
 
@@ -138,8 +140,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // Show the response on screen and speak it
                 _uiState.value = UiState.ShowingResponse(response, apiProvider)
                 
-                // Speak the response to the user
-                audioManager.speakOffline(response)
+                // Speak the response using online Qwen TTS (chunked)
+                audioManager.playUiNotificationTone()
+                isSpeakingResponse = true
+                audioManager.speakOnlineQwen(getApplication(), response) {
+                    // TTS completed for all chunks
+                    isSpeakingResponse = false
+                    CoroutineScope(Dispatchers.Main).launch {
+                        kotlinx.coroutines.delay(500)
+                        _uiState.value = UiState.AwaitingInput
+                    }
+                }
                 
                 // Reset to awaiting input after a delay
                 CoroutineScope(Dispatchers.Main).launch {
@@ -150,7 +161,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             onError = { error ->
                 _uiState.value = UiState.Error("Failed to send data: $error")
                 // Also speak the error
-                audioManager.speakOffline("Error occurred: $error")
+                audioManager.speakOnlineQwen(getApplication(), "Error occurred: $error")
             }
         )
     }
@@ -167,16 +178,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onVolumeUpPressed() {
         // Test Android TTS when volume up is pressed
-        Log.i("guida", "[MainViewModel] Volume up pressed - testing Android TTS")
-        _uiState.value = UiState.Processing("Volume up pressed - testing Android TTS")
-        
-        // Test Android TTS with "volume up" message
-        audioManager.testAndroidTts("Volume up") {
-            Log.i("guida", "[MainViewModel] Android TTS test completed")
-            // Reset to awaiting input after TTS completes
-        CoroutineScope(Dispatchers.Main).launch {
-                kotlinx.coroutines.delay(500) // Brief delay after TTS completes
-            _uiState.value = UiState.AwaitingInput
+        Log.i("guida", "[MainViewModel] Volume up pressed - testing Qwen Online TTS")
+        _uiState.value = UiState.Processing("Volume up pressed - testing Qwen Online TTS")
+        audioManager.speakOnlineQwen(getApplication(), "Volume up") {
+            CoroutineScope(Dispatchers.Main).launch {
+                kotlinx.coroutines.delay(500)
+                _uiState.value = UiState.AwaitingInput
             }
         }
     }

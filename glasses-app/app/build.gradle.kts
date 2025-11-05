@@ -4,6 +4,22 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+import java.util.Properties
+
+// Load local properties for secrets without committing them
+val localProps = Properties().apply {
+    val localFile = rootProject.file("local.properties")
+    if (localFile.exists()) {
+        localFile.inputStream().use { this.load(it) }
+    }
+}
+
+val qwenKey: String = localProps.getProperty("QWEN_API_KEY", "")
+val openaiKey: String = localProps.getProperty("OPENAI_API_KEY", "")
+val moondreamKey: String = localProps.getProperty("MOONDREAM_API_KEY", "")
+val proxyHost: String = localProps.getProperty("PROXY_HOST", "")
+val proxyPort: String = localProps.getProperty("PROXY_PORT", "")
+
 android {
     namespace = "com.guidaco.guidaglassesapp"
     compileSdk = 35
@@ -19,6 +35,13 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
+
+        // Expose keys via BuildConfig (values come from local.properties)
+        buildConfigField("String", "QWEN_API_KEY", '"' + qwenKey.replace("\"", "\\\"") + '"')
+        buildConfigField("String", "OPENAI_API_KEY", '"' + openaiKey.replace("\"", "\\\"") + '"')
+        buildConfigField("String", "MOONDREAM_API_KEY", '"' + moondreamKey.replace("\"", "\\\"") + '"')
+        buildConfigField("String", "PROXY_HOST", '"' + proxyHost.replace("\"", "\\\"") + '"')
+        buildConfigField("String", "PROXY_PORT", '"' + proxyPort.replace("\"", "\\\"") + '"')
     }
 
     buildTypes {
@@ -39,6 +62,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     lint {
         disable += "FlowOperatorInvokedInComposition"
@@ -47,6 +71,8 @@ android {
         abortOnError = false
     }
 }
+
+// Removed duplicate applicationVariants block: BuildConfig fields are set in defaultConfig
 
 dependencies {
 

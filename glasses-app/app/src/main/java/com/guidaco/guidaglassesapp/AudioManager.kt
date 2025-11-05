@@ -448,7 +448,7 @@ class AudioManager(private val context: Context) {
         .build()
     
     // OpenAI TTS configuration
-    private val openAiApiKey = "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"
+    private val openAiApiKey = BuildConfig.OPENAI_API_KEY
     private val ttsModel = "gpt-4o-mini-tts"
     private val ttsVoice = "coral" // Cheerful and positive voice
     
@@ -459,9 +459,7 @@ class AudioManager(private val context: Context) {
     
     init {
         initializeToneGenerator()
-        // Initialize TTS singleton once
-        TtsManager.init(context)
-        Log.i("GuidaAudioManager", "AudioManager initialized with OpenAI Streaming TTS and singleton Android TTS")
+        Log.i("GuidaAudioManager", "AudioManager initialized (online Qwen TTS mode)")
     }
     
     private fun initializeToneGenerator() {
@@ -784,6 +782,11 @@ class AudioManager(private val context: Context) {
             }.start()
         }
     }
+
+    // Public helper to play a brief notification tone for UI feedback
+    fun playUiNotificationTone() {
+        playNotificationTone()
+    }
     
     fun setSpeechRate(rate: Float) {
         // No-op for OpenAI TTS as it's a text-to-speech API
@@ -794,31 +797,7 @@ class AudioManager(private val context: Context) {
     /**
      * Test Android TTS functionality - speaks the given text using offline Android TTS
      */
-    fun testAndroidTts(text: String, onComplete: (() -> Unit)? = null) {
-        Log.i("GuidaAudioManager", "Testing Android TTS with text: '$text'")
-        Log.i("GuidaAudioManager", "TTS ready: ${TtsManager.isReady()}")
-        
-        if (!TtsManager.isReady()) {
-            Log.e("GuidaAudioManager", "Android TTS not ready, cannot test")
-            Log.e("GuidaAudioManager", "Possible solutions:")
-            Log.e("GuidaAudioManager", "  1. Install Google TTS from Play Store")
-            Log.e("GuidaAudioManager", "  2. Go to Settings > Language & Input > Text-to-speech output")
-            Log.e("GuidaAudioManager", "  3. Select and configure a TTS engine")
-            Log.e("GuidaAudioManager", "  4. Download TTS language data if needed")
-            
-            // Play a fallback tone to indicate the test was attempted
-            playNotificationTone()
-            onComplete?.invoke()
-            return
-        }
-        
-        val success = TtsManager.speak(text, onComplete)
-        if (!success) {
-            Log.e("GuidaAudioManager", "TTS speak() failed")
-            playErrorTone()
-            onComplete?.invoke()
-        }
-    }
+    // Removed offline Android TTS test; use online Qwen TTS instead
     
     fun playStartListeningSound() {
         // Play a rising tone sequence (like Apple's start sound)
@@ -870,5 +849,67 @@ class AudioManager(private val context: Context) {
             playErrorTone()
             onComplete?.invoke()
         }
+    }
+
+    fun speakOnlineQwen(context: Context, text: String, voice: String = "Cherry", onComplete: (() -> Unit)? = null) {
+        Log.i("GuidaAudioManager", "Speaking online via Qwen TTS")
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val apiKey = BuildConfig.QWEN_API_KEY
+                val chunks = chunkForTts(text, 550)
+                Log.i("GuidaAudioManager", "TTS chunk count: ${chunks.size}")
+
+                fun playSequentially(index: Int) {
+                    if (index >= chunks.size) {
+                        onComplete?.invoke()
+                        return
+                    }
+                    val chunkText = chunks[index]
+                    launch {
+                        try {
+                            val outFile = QwenTtsClient.synthesizeToFile(context, apiKey, chunkText, voice, "wav")
+                            withContext(Dispatchers.Main) {
+                                QwenTtsClient.playFile(context, outFile, onDone = {
+                                    // small gap between chunks for clarity
+                                    CoroutineScope(Dispatchers.IO).launch {
+                                        try { Thread.sleep(150) } catch (_: InterruptedException) {}
+                                        playSequentially(index + 1)
+                                    }
+                                }, onError = { e ->
+                                    Log.e("GuidaAudioManager", "Qwen TTS playback error: ${e.message}")
+                                    playSequentially(index + 1)
+                                })
+                            }
+                        } catch (e: Exception) {
+                            Log.e("GuidaAudioManager", "Qwen TTS synth error: ${e.message}")
+                            playSequentially(index + 1)
+                        }
+                    }
+                }
+
+                playSequentially(0)
+            } catch (e: Exception) {
+                Log.e("GuidaAudioManager", "Qwen TTS sequence error: ${e.message}")
+                withContext(Dispatchers.Main) { onComplete?.invoke() }
+            }
+        }
+    }
+
+    private fun chunkForTts(text: String, maxLen: Int): List<String> {
+        if (text.length <= maxLen) return listOf(text)
+        val normalized = text.replace("\r", "")
+        val parts = mutableListOf<String>()
+        var current = StringBuilder()
+        val delimiters = setOf('.', '。', '！', '!', '？', '?', '\n')
+        for (c in normalized) {
+            current.append(c)
+            val isBoundary = delimiters.contains(c)
+            if (current.length >= maxLen || (isBoundary && current.length >= maxLen - 50)) {
+                parts.add(current.toString().trim())
+                current = StringBuilder()
+            }
+        }
+        if (current.isNotEmpty()) parts.add(current.toString().trim())
+        return parts.filter { it.isNotEmpty() }
     }
 } 

@@ -6,6 +6,7 @@ import android.util.Base64
 import android.util.Log
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.logging.HttpLoggingInterceptor
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -17,43 +18,76 @@ import java.util.concurrent.TimeUnit
 class HttpClient {
     companion object {
         private const val TAG = "HttpClient"
+        private const val DEBUG_NETWORK = true
         
         // API Configuration - can be switched between providers
-        private const val USE_OPENAI = true // Set to false to use Moondream instead
-        
+        private const val USE_QWEN = true // Set to true to use Qwen, false to use OpenAI, set to null to use Moondream
+
+        // Qwen (千问) API configuration - use OpenAI compatible endpoint
+        private const val QWEN_API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+        private val QWEN_API_KEY: String get() = BuildConfig.QWEN_API_KEY
+
         // Moondream API configuration
         private const val MOONDREAM_API_URL = "https://api.moondream.ai/v1/query"
-        private const val MOONDREAM_API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXlfaWQiOiI1ODllMmIwNi0yNGNlLTQ3NzQtODk0Ni04NmYyODBkYmY3ZWEiLCJvcmdfaWQiOiJpalo3Z0N4SWM0eDI0ZUdzRkFzeVh2TDhma2VUSzV3bSIsImlhdCI6MTc1MTk3MzM3MSwidmVyIjoxfQ.b2bT7AKSfifNIfwKVboZ41U-ETB7fvnPgF0xPxIC-H0"
-        
+        private val MOONDREAM_API_KEY: String get() = BuildConfig.MOONDREAM_API_KEY
+
         // OpenAI Vision API configuration
         private const val OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
-        private const val OPENAI_API_KEY = "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"
+        private val OPENAI_API_KEY: String get() = BuildConfig.OPENAI_API_KEY
     }
 
     private val client = OkHttpClient.Builder()
         //.proxy(Proxy(Proxy.Type.HTTP, InetSocketAddress("172.20.10.1", 7890)))
-        .connectTimeout(30, TimeUnit.SECONDS) // Increased timeout for proxy
+        .connectTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
+        .addInterceptor(
+            HttpLoggingInterceptor { message ->
+                if (DEBUG_NETWORK) Log.d("OkHttp", message)
+            }.apply {
+                level = if (DEBUG_NETWORK) HttpLoggingInterceptor.Level.HEADERS else HttpLoggingInterceptor.Level.NONE
+                redactHeader("Authorization")
+                redactHeader("X-Moondream-Auth")
+            }
+        )
         .eventListener(object : EventListener() {
+            override fun callStart(call: Call) {
+                if (DEBUG_NETWORK) Log.d(TAG, "[NET] callStart: ${call.request().url}")
+            }
+            override fun dnsStart(call: Call, domainName: String) {
+                if (DEBUG_NETWORK) Log.d(TAG, "[NET] dnsStart: $domainName")
+            }
+            override fun dnsEnd(call: Call, domainName: String, inetAddressList: List<java.net.InetAddress>) {
+                if (DEBUG_NETWORK) Log.d(TAG, "[NET] dnsEnd: $domainName -> ${inetAddressList}")
+            }
             override fun connectStart(call: Call, inetSocketAddress: InetSocketAddress, proxy: Proxy) {
-                super.connectStart(call, inetSocketAddress, proxy)
-                Log.d(TAG, "[CONNECTION-DIAG] connectStart: dest=${inetSocketAddress}, proxy=$proxy")
+                if (DEBUG_NETWORK) Log.d(TAG, "[NET] connectStart: dest=${inetSocketAddress}, proxy=$proxy")
             }
             override fun secureConnectStart(call: Call) {
-                super.secureConnectStart(call)
-                Log.d(TAG, "[CONNECTION-DIAG] secureConnectStart: TLS handshake beginning...")
+                if (DEBUG_NETWORK) Log.d(TAG, "[NET] secureConnectStart (TLS)")
             }
             override fun connectFailed(call: Call, inetSocketAddress: InetSocketAddress, proxy: Proxy, protocol: Protocol?, ioe: IOException) {
-                super.connectFailed(call, inetSocketAddress, proxy, protocol, ioe)
-                Log.e(TAG, "[CONNECTION-DIAG] connectFailed: dest=${inetSocketAddress}, proxy=$proxy", ioe)
+                Log.e(TAG, "[NET] connectFailed: dest=${inetSocketAddress}, proxy=$proxy, protocol=$protocol", ioe)
+            }
+            override fun responseHeadersEnd(call: Call, response: Response) {
+                if (DEBUG_NETWORK) Log.d(TAG, "[NET] responseHeadersEnd: code=${response.code} url=${response.request.url}")
+            }
+            override fun callFailed(call: Call, ioe: IOException) {
+                Log.e(TAG, "[NET] callFailed: url=${call.request().url}", ioe)
             }
         })
         .addInterceptor { chain ->
             val originalRequest = chain.request()
-            Log.i(TAG, "Making request to: ${originalRequest.url}")
+            val requestId = System.currentTimeMillis().toString()
+            Log.i(TAG, "[REQ $requestId] Making request to: ${originalRequest.url}")
 
             val newRequest = when {
+                originalRequest.url.toString().contains("dashscope.aliyuncs.com") -> {
+                    originalRequest.newBuilder()
+                        .addHeader("Authorization", "Bearer $QWEN_API_KEY")
+                        .addHeader("Content-Type", "application/json")
+                        .build()
+                }
                 originalRequest.url.toString().contains("openai.com") -> {
                     originalRequest.newBuilder()
                         .addHeader("Authorization", "Bearer $OPENAI_API_KEY")
@@ -68,7 +102,11 @@ class HttpClient {
                 }
                 else -> originalRequest
             }
-            chain.proceed(newRequest)
+            val t0 = System.nanoTime()
+            val response = chain.proceed(newRequest)
+            val dtMs = (System.nanoTime() - t0) / 1_000_000
+            Log.i(TAG, "[REQ $requestId] Completed: code=${response.code} in ${dtMs}ms url=${response.request.url}")
+            response
         }
         .build()
 
@@ -82,21 +120,226 @@ class HttpClient {
         Log.i("GuidaUpload", "Preparing to send image: ${imageFile.name}, text: $recognizedText")
         
         // Route to appropriate API based on current provider
-        if (USE_OPENAI) {
-            Log.i(TAG, "Using OpenAI Vision API")
-            sendToOpenAIVisionAPI(imageFile, recognizedText, 
-                { response -> onSuccess(response, "OpenAI Vision") }, 
-                onError
-            )
-        } else {
-            Log.i(TAG, "Using Moondream API")
-            sendToMoondreamAPI(imageFile, recognizedText, 
-                { response -> onSuccess(response, "Moondream") }, 
-                onError
-            )
+        when {
+            USE_QWEN == true -> {
+                Log.i(TAG, "Using Qwen Vision API")
+                sendToQwenAPI(imageFile, recognizedText,
+                    { response -> onSuccess(response, "Qwen Vision") },
+                    onError
+                )
+            }
+            USE_QWEN == false -> {
+                Log.i(TAG, "Using OpenAI Vision API")
+                sendToOpenAIVisionAPI(imageFile, recognizedText,
+                    { response -> onSuccess(response, "OpenAI Vision") },
+                    onError
+                )
+            }
+            else -> {
+                Log.i(TAG, "Using Moondream API")
+                sendToMoondreamAPI(imageFile, recognizedText,
+                    { response -> onSuccess(response, "Moondream") },
+                    onError
+                )
+            }
         }
     }
-    
+
+    private fun sendToQwenAPI(
+        imageFile: File,
+        recognizedText: String,
+        onSuccess: (String) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        try {
+            Log.i(TAG, "Sending to Qwen API")
+
+            // Check if image file exists and is readable
+            if (!imageFile.exists() || !imageFile.canRead()) {
+                onError("Image file not found or cannot be read")
+                return
+            }
+
+            Log.i(TAG, "Original image file size: ${imageFile.length()} bytes")
+
+            // Compress image to reduce payload size
+            val compressedImageBytes = compressImage(imageFile)
+
+            // Check if compressed image is too large (Qwen VL models typically support up to certain limits)
+            if (compressedImageBytes.size > 20 * 1024 * 1024) {
+                onError("Image is too large even after compression. Please try with a smaller image.")
+                return
+            }
+
+            val imageBase64 = Base64.encodeToString(compressedImageBytes, Base64.NO_WRAP)
+            val imageDataUri = "data:image/jpeg;base64,$imageBase64"
+
+            Log.i(TAG, "Image compressed and converted to base64 data URI")
+            Log.i(TAG, "Original size: ${imageFile.length()} bytes, compressed size: ${compressedImageBytes.size} bytes")
+            Log.i(TAG, "Base64 data URI length: ${imageDataUri.length}")
+
+            // Debug: Check API key (masked)
+            Log.i(TAG, "API key length: ${QWEN_API_KEY.length}")
+            Log.i(TAG, "API key starts with: ${QWEN_API_KEY.take(4)}****")
+
+            // Validate API key format (should start with sk-)
+            if (QWEN_API_KEY.isEmpty()) {
+                onError("Qwen API key is empty")
+                return
+            }
+
+            if (!QWEN_API_KEY.startsWith("sk-")) {
+                onError("Qwen API key format appears invalid (should start with 'sk-')")
+                return
+            }
+
+            Log.i(TAG, "Qwen API key validation passed")
+
+            // Use the speech text as the user question, or a default question if no speech
+            val userQuestion = if (recognizedText.isNotEmpty()) {
+                "You are a concise, second-person visual narrator. Answer user's question concisely in plain text (no markdown, no lists) and ask ONE specific follow-up question that helps the user act next. User's question is: $recognizedText. Total length ≤ 80 words."
+            } else {
+                "You are a concise, second-person visual narrator. Answer in a few sentences, plain text (no markdown, no lists). Structure your answer as exactly TWO parts: 1) A short second-person scene sentence that starts with \"You are …\" describing the image. 2) Ask ONE specific follow-up question that helps the user act next. Constraints: Total length ≤ 80 words."
+            }
+
+            Log.i(TAG, "Qwen Vision question: '$userQuestion'")
+
+            // Create JSON payload for Qwen OpenAI-compatible chat completions
+            val messagesArray = org.json.JSONArray().apply {
+                put(org.json.JSONObject().apply {
+                    put("role", "user")
+                    put("content", org.json.JSONArray().apply {
+                        put(org.json.JSONObject().apply {
+                            put("type", "text")
+                            put("text", userQuestion)
+                        })
+                        put(org.json.JSONObject().apply {
+                            put("type", "image_url")
+                            put("image_url", org.json.JSONObject().apply { put("url", imageDataUri) })
+                        })
+                    })
+                })
+            }
+
+            val jsonPayload = org.json.JSONObject().apply {
+                put("model", "qwen-vl-plus")
+                put("messages", messagesArray)
+                put("max_tokens", 1000)
+                put("temperature", 0.7)
+            }
+
+            val requestBody = RequestBody.create(
+                "application/json".toMediaTypeOrNull(),
+                jsonPayload.toString()
+            )
+
+            // Debug: Log masked auth header
+            val authHeader = QWEN_API_KEY
+            Log.i(TAG, "Qwen Authorization header: Bearer ${authHeader.take(4)}****")
+
+            val request = Request.Builder()
+                .url(QWEN_API_URL)
+                .post(requestBody)
+                .build()
+
+            // Note: Headers are added by the interceptor
+            Log.i(TAG, "Request created, headers will be added by interceptor")
+            Log.i(TAG, "Payload sizes: imageCompressed=${compressedImageBytes.size}B, json=${jsonPayload.toString().length} chars")
+
+            Log.i(TAG, "Sending request to Qwen Vision API: $QWEN_API_URL")
+            Log.i("GuidaUpload", "Sending request to Qwen Vision API with question: $userQuestion")
+
+            client.newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    Log.e(TAG, "Qwen Vision API request failed", e)
+                    Log.e("GuidaUpload", "Qwen Vision API request failed: ${e.message}")
+
+                    val errorMessage = when {
+                        e.message?.contains("timeout") == true -> "Request timed out. Please check your internet connection and try again."
+                        e.message?.contains("Unable to resolve host") == true -> "Cannot connect to Qwen API. Please check your internet connection."
+                        e.message?.contains("SSL") == true -> "Secure connection failed. Please check your internet connection."
+                        else -> "Network error: ${e.message}"
+                    }
+
+                    onError(errorMessage)
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    val responseBody = response.body?.string() ?: ""
+                    Log.i(TAG, "Qwen Vision API response: ${response.code} - $responseBody")
+                    Log.i("GuidaUpload", "Qwen Vision API response: ${response.code} - $responseBody")
+
+                    if (response.isSuccessful) {
+                        try {
+                            // Parse the JSON response for OpenAI-compatible schema first
+                            val jsonResponse = org.json.JSONObject(responseBody)
+                            var extracted: String? = null
+
+                            // OpenAI-compatible: { choices: [ { message: { content: "..." } } ] }
+                            val compatChoices = jsonResponse.optJSONArray("choices")
+                            if (compatChoices != null && compatChoices.length() > 0) {
+                                val first = compatChoices.getJSONObject(0)
+                                val msg = first.optJSONObject("message")
+                                if (msg != null) {
+                                    val contentStr = msg.optString("content", "")
+                                    if (contentStr.isNotEmpty()) extracted = contentStr
+                                }
+                            }
+
+                            // Legacy DashScope: { output: { choices: [ { message: { content: [ {text: "..."}, ... ] } } ] } }
+                            if (extracted == null) {
+                                val output = jsonResponse.optJSONObject("output")
+                                if (output != null) {
+                                    val choices = output.optJSONArray("choices")
+                                    if (choices != null && choices.length() > 0) {
+                                        val firstChoice = choices.getJSONObject(0)
+                                        val message = firstChoice.optJSONObject("message")
+                                        if (message != null) {
+                                            val contentValue = message.opt("content")
+                                            var aggregatedText = ""
+                                            if (contentValue is org.json.JSONArray) {
+                                                for (i in 0 until contentValue.length()) {
+                                                    val item = contentValue.optJSONObject(i)
+                                                    if (item != null) {
+                                                        val textPart = item.optString("text", "")
+                                                        if (textPart.isNotEmpty()) {
+                                                            if (aggregatedText.isNotEmpty()) aggregatedText += "\n"
+                                                            aggregatedText += textPart
+                                                        }
+                                                    }
+                                                }
+                                            } else if (contentValue is String) {
+                                                aggregatedText = contentValue
+                                            }
+                                            if (aggregatedText.isNotEmpty()) extracted = aggregatedText
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (!extracted.isNullOrEmpty()) {
+                                Log.i(TAG, "Qwen Vision answer: $extracted")
+                                onSuccess(extracted)
+                            } else {
+                                onError("No output in Qwen response")
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error parsing Qwen Vision response: ${e.message}")
+                            onSuccess("Qwen response: $responseBody")
+                        }
+                    } else {
+                        Log.e(TAG, "Qwen Vision API error: ${response.code}")
+                        onError("Qwen Vision API error: ${response.code} - $responseBody")
+                    }
+                }
+            })
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Error preparing Qwen request", e)
+            onError("Qwen preparation error: ${e.message}")
+        }
+    }
+
     private fun sendToMoondreamAPI(
         imageFile: File,
         recognizedText: String,
@@ -132,16 +375,16 @@ class HttpClient {
             
             // Use the speech text as the question, or a default question if no speech
             val question = if (recognizedText.isNotEmpty()) {
-                recognizedText
+                "You are a concise, second-person visual narrator. Answer user's question concisely in plain text (no markdown, no lists) and ask ONE specific follow-up question that helps the user act next. User's question is: $recognizedText. Total length ≤ 80 words."
             } else {
-                "What do you see in this image? Describe what's happening."
+                "You are a concise, second-person visual narrator. Answer in a few sentences, plain text (no markdown, no lists). Structure your answer as exactly TWO parts: 1) A short second-person scene sentence that starts with \"You are …\" describing the image. 2) Ask ONE specific follow-up question that helps the user act next. Constraints: Total length ≤ 80 words."
             }
             
             Log.i(TAG, "Moondream question: '$question'")
             
-            // Debug: Check API key
+            // Debug: Check API key (masked)
             Log.i(TAG, "API key length: ${MOONDREAM_API_KEY.length}")
-            Log.i(TAG, "API key starts with: ${MOONDREAM_API_KEY.take(20)}...")
+            Log.i(TAG, "API key starts with: ${MOONDREAM_API_KEY.take(4)}****")
             
             // Validate API key format (should be a JWT token)
             if (MOONDREAM_API_KEY.isEmpty()) {
@@ -174,9 +417,9 @@ class HttpClient {
                 jsonPayload.toString()
             )
             
-            // Debug: Log the authorization header value
+            // Debug: Log masked auth header
             val authHeader = MOONDREAM_API_KEY
-            Log.i(TAG, "X-Moondream-Auth header: $authHeader")
+            Log.i(TAG, "X-Moondream-Auth header starts: ${authHeader.take(4)}****")
 
         val request = Request.Builder()
                 .url(MOONDREAM_API_URL)
@@ -273,9 +516,9 @@ class HttpClient {
             Log.i(TAG, "Original size: ${imageFile.length()} bytes, compressed size: ${compressedImageBytes.size} bytes")
             Log.i(TAG, "Base64 data URI length: ${imageDataUri.length}")
             
-            // Debug: Check API key
+            // Debug: Check API key (masked)
             Log.i(TAG, "API key length: ${OPENAI_API_KEY.length}")
-            Log.i(TAG, "API key starts with: ${OPENAI_API_KEY.take(20)}...")
+            Log.i(TAG, "API key starts with: ${OPENAI_API_KEY.take(4)}****")
             
             // Validate API key format (should start with sk-)
             if (OPENAI_API_KEY.isEmpty()) {
@@ -292,9 +535,9 @@ class HttpClient {
             
             // Use the speech text as the user question, or a default question if no speech
             val userQuestion = if (recognizedText.isNotEmpty()) {
-                recognizedText
+                "You are a concise, second-person visual narrator. Answer user's question concisely in plain text (no markdown, no lists) and ask ONE specific follow-up question that helps the user act next. User's question is: $recognizedText. Total length ≤ 80 words."
             } else {
-                "What do you see in this image? Describe what's happening in detail."
+                "You are a concise, second-person visual narrator. Answer in a few sentences, plain text (no markdown, no lists). Structure your answer as exactly TWO parts: 1) A short second-person scene sentence that starts with \"You are …\" describing the image. 2) Ask ONE specific follow-up question that helps the user act next. Constraints: Total length ≤ 80 words."
             }
             
             Log.i(TAG, "OpenAI Vision question: '$userQuestion'")
@@ -331,9 +574,9 @@ class HttpClient {
                 jsonPayload.toString()
             )
             
-            // Debug: Log the authorization header value
+            // Debug: Log masked auth header
             val authHeader = OPENAI_API_KEY
-            Log.i(TAG, "OpenAI Authorization header: Bearer $authHeader")
+            Log.i(TAG, "OpenAI Authorization header: Bearer ${authHeader.take(4)}****")
             
             val request = Request.Builder()
                 .url(OPENAI_API_URL)
