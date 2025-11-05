@@ -132,7 +132,7 @@ class RadarManager {
         val numTargets = payload.size / TARGET_INFO_PACKET_LENGTH
         
         if (numTargets > 0) {
-            Log.i(tag, "🎯 Detected $numTargets targets:")
+            Log.i(tag, “Detected $numTargets targets:")
             for (i in 0 until numTargets) {
                 val targetData = payload.sliceArray(i * TARGET_INFO_PACKET_LENGTH until (i + 1) * TARGET_INFO_PACKET_LENGTH)
                 val byteBuffer = ByteBuffer.wrap(targetData).order(ByteOrder.LITTLE_ENDIAN)
