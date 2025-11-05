@@ -10,7 +10,8 @@ import java.util.UUID
 import kotlin.concurrent.thread
 
 class BluetoothWifiServer(
-    private val onCredentialsReceived: (ssid: String, password: String) -> Unit
+    // Updated callback includes optional phoneApiUrl (third token) when provided by phone
+    private val onCredentialsReceived: (ssid: String, password: String, phoneApiUrl: String?) -> Unit
 ) {
     private val adapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
     private var serverSocket: BluetoothServerSocket? = null
@@ -64,13 +65,17 @@ class BluetoothWifiServer(
                     for (i in parts.indices) {
                         Log.i("BluetoothWifiServer", "Part[$i]: '${parts[i]}'")
                     }
-                    
-                if (parts.size == 2) {
+                    // Accept either 2-part (ssid,password) or 3-part (ssid,password,phoneUrl)
+                    if (parts.size >= 2) {
                         val ssid = parts[0].trim()
                         val password = parts[1].trim()
+                        val phoneUrl = if (parts.size >= 3) parts[2].trim() else null
                         Log.i("BluetoothWifiServer", "=== FINAL PARSED CREDENTIALS ===")
                         Log.i("BluetoothWifiServer", "SSID: '$ssid' (length: ${ssid.length})")
                         Log.i("BluetoothWifiServer", "Password: '$password' (length: ${password.length})")
+                        if (!phoneUrl.isNullOrEmpty()) {
+                            Log.i("BluetoothWifiServer", "Phone API URL token received: '$phoneUrl'")
+                        }
                         
                         if (ssid.isEmpty()) {
                             Log.e("BluetoothWifiServer", "ERROR: Parsed SSID is empty!")
@@ -80,15 +85,27 @@ class BluetoothWifiServer(
                         }
                         
                         Log.i("BluetoothWifiServer", "Calling onCredentialsReceived...")
-                    onCredentialsReceived(ssid, password)
+                        onCredentialsReceived(ssid, password, phoneUrl)
                     } else {
-                        Log.e("BluetoothWifiServer", "Invalid credentials format - expected 2 parts, got ${parts.size}")
+                        Log.e("BluetoothWifiServer", "Invalid credentials format - expected at least 2 parts, got ${parts.size}")
                         Log.e("BluetoothWifiServer", "Parts were: $parts")
                     }
                 } else {
                     Log.e("BluetoothWifiServer", "Received empty or null data")
                 }
                 
+                // Send a small ACK back to the phone so the phone's writer/read loops
+                // can see an explicit response and avoid "read failed" timeouts.
+                try {
+                    val writer = java.io.OutputStreamWriter(clientSocket.outputStream)
+                    writer.write("OK\n")
+                    writer.flush()
+                    writer.close()
+                    Log.i("BluetoothWifiServer", "Sent ACK to client")
+                } catch (e: Exception) {
+                    Log.w("BluetoothWifiServer", "Failed to send ACK to client: ${e.message}")
+                }
+
                 reader.close()
                 clientSocket.close()
                 Log.i("BluetoothWifiServer", "Connection closed successfully")

@@ -6,6 +6,9 @@ import android.util.Base64
 import android.util.Log
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MultipartBody
+import okhttp3.RequestBody.Companion.asRequestBody
+import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -72,6 +75,16 @@ class HttpClient {
         }
         .build()
 
+    // Short-timeout client for phone-local calls / probes
+    private val phoneClient: OkHttpClient = client.newBuilder()
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .writeTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS)
+        .build()
+
+    @Volatile
+    private var phoneApiUrl: String? = null
+
     fun sendImageAndText(
         imageFile: File,
         recognizedText: String,
@@ -81,17 +94,39 @@ class HttpClient {
         Log.i(TAG, "Preparing to send image: ${imageFile.name}, text: $recognizedText")
         Log.i("GuidaUpload", "Preparing to send image: ${imageFile.name}, text: $recognizedText")
         
-        // Route to appropriate API based on current provider
+        // If a phone-local URL is configured, try that first and fall back to cloud providers
+        val phoneUrlSnapshot = phoneApiUrl
+        if (!phoneUrlSnapshot.isNullOrEmpty()) {
+            Log.i(TAG, "Attempting to send to phone-local Gemma at $phoneUrlSnapshot")
+            sendToPhoneApp(imageFile, recognizedText, { response ->
+                onSuccess(response, "Phone Gemma")
+            }, { phoneErr ->
+                Log.w(TAG, "Phone Gemma call failed: $phoneErr. Falling back to cloud provider.")
+                // fallback to configured provider
+                if (USE_OPENAI) {
+                    sendToOpenAIVisionAPI(imageFile, recognizedText,
+                        { response -> onSuccess(response, "OpenAI Vision") },
+                        onError)
+                } else {
+                    sendToMoondreamAPI(imageFile, recognizedText,
+                        { response -> onSuccess(response, "Moondream") },
+                        onError)
+                }
+            })
+            return
+        }
+
+        // No phone URL configured — route to configured cloud provider
         if (USE_OPENAI) {
             Log.i(TAG, "Using OpenAI Vision API")
-            sendToOpenAIVisionAPI(imageFile, recognizedText, 
-                { response -> onSuccess(response, "OpenAI Vision") }, 
+            sendToOpenAIVisionAPI(imageFile, recognizedText,
+                { response -> onSuccess(response, "OpenAI Vision") },
                 onError
             )
         } else {
             Log.i(TAG, "Using Moondream API")
-            sendToMoondreamAPI(imageFile, recognizedText, 
-                { response -> onSuccess(response, "Moondream") }, 
+            sendToMoondreamAPI(imageFile, recognizedText,
+                { response -> onSuccess(response, "Moondream") },
                 onError
             )
         }
@@ -450,7 +485,101 @@ class HttpClient {
     // NOTE: All custom connectivity test functions have been removed.
 
     fun updateServerUrl(newUrl: String) {
-        // This method can be used to dynamically update the server URL
+        // Update stored phone-local API URL (used to route vision requests to an on-phone Gemma service)
+        phoneApiUrl = newUrl
         Log.i(TAG, "Server URL updated to: $newUrl")
+    }
+
+    /**
+     * Try sending the image+text to an on-phone Gemma service at phoneApiUrl.
+     * Calls onSuccess(apiResponse) on success, onError(errorMessage) on failure.
+     */
+    private fun sendToPhoneApp(
+        imageFile: File,
+        recognizedText: String,
+        onSuccess: (String) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val base = phoneApiUrl ?: run {
+            onError("Phone API URL not configured")
+            return
+        }
+
+        val target = if (base.endsWith("/")) base + "v1/gemma/vision" else base + "/v1/gemma/vision"
+
+        try {
+            if (!imageFile.exists() || !imageFile.canRead()) {
+                onError("Image file not found or cannot be read")
+                return
+            }
+
+            val imageRequestBody = imageFile.asRequestBody("image/jpeg".toMediaTypeOrNull())
+            val multipart = MultipartBody.Builder().setType(MultipartBody.FORM)
+                .addFormDataPart("image", imageFile.name, imageRequestBody)
+                .addFormDataPart("question", recognizedText.ifEmpty { "What do you see in this image?" })
+                .build()
+
+            val request = Request.Builder()
+                .url(target)
+                .post(multipart)
+                .build()
+
+            phoneClient.newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    Log.e(TAG, "Phone app request failed: ${e.message}", e)
+                    onError("Phone request failed: ${e.message}")
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    val body = response.body?.string() ?: ""
+                    Log.i(TAG, "Phone app response: ${response.code} - $body")
+                    if (response.isSuccessful) {
+                        try {
+                            val obj = JSONObject(body)
+                            val answer = obj.optString("answer")
+                                .ifEmpty { obj.optString("result") }
+                                .ifEmpty { obj.optString("response") }
+                                .ifEmpty { body }
+                            onSuccess(answer)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to parse phone response JSON: ${e.message}")
+                            onSuccess(body)
+                        }
+                    } else {
+                        onError("Phone app error: ${response.code} - $body")
+                    }
+                }
+            })
+        } catch (e: Exception) {
+            Log.e(TAG, "Error sending to phone app: ${e.message}", e)
+            onError("Error sending to phone app: ${e.message}")
+        }
+    }
+
+    /**
+     * Probe the given URL (base) for a healthy gemma service. Returns true if reachable.
+     */
+    fun probePhoneUrl(baseUrl: String): Boolean {
+        try {
+            val checks = listOf("/v1/gemma/health", "/health", "/")
+            for (p in checks) {
+                val target = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) + p else baseUrl + p
+                val request = Request.Builder().url(target).get().build()
+                try {
+                    val resp = phoneClient.newCall(request).execute()
+                    resp.use {
+                        if (it.isSuccessful) {
+                            Log.i(TAG, "probePhoneUrl: $target -> ${it.code}")
+                            return true
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.d(TAG, "probe attempt failed for $target: ${e.message}")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "probePhoneUrl exception: ${e.message}")
+        }
+        return false
     }
 } 

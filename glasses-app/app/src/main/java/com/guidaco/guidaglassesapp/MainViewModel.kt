@@ -24,6 +24,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val httpClient = HttpClient()
     private val wifiManager = GuidaWifiManager(application)
     private val audioManager = AudioManager(application)
+    // Store last-received credentials (from phone provisioning) so Test WiFi can reuse them
+    private var pendingSsid: String? = null
+    private var pendingPassword: String? = null
     private var isListening = false
     private var speechRecognitionManager: SpeechRecognitionManager? = null
     private var lastCapturedImage: File? = null
@@ -193,12 +196,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     
     // WiFi Management Functions
     fun connectToWifi(ssid: String, password: String) {
+        // Save pending credentials so UI/test flow can re-use them
+        pendingSsid = ssid
+        pendingPassword = password
         _uiState.value = UiState.Processing("Connecting to WiFi: $ssid")
         wifiManager.connectToWifi(ssid, password)
         // Reset to awaiting input after a short delay
         CoroutineScope(Dispatchers.Main).launch {
             kotlinx.coroutines.delay(3000) // Show message for 3 seconds
             _uiState.value = UiState.AwaitingInput
+        }
+    }
+
+    fun getPendingCredentials(): Pair<String, String>? {
+        return if (!pendingSsid.isNullOrEmpty() && pendingPassword != null) {
+            Pair(pendingSsid!!, pendingPassword!!)
+        } else null
+    }
+
+    /** Called by MainActivity to update phone-local API URL when provisioning sends it */
+    fun updatePhoneApiUrl(newUrl: String) {
+        try {
+            httpClient.updateServerUrl(newUrl)
+            Log.i("guida", "Phone API URL updated in HttpClient: $newUrl")
+        } catch (e: Exception) {
+            Log.e("guida", "Failed to update phone API URL: ${e.message}", e)
         }
     }
     

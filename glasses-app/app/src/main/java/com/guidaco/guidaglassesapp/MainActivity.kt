@@ -91,13 +91,18 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 Toast.makeText(this, "Waiting for phone to send WiFi credentials via Bluetooth...", Toast.LENGTH_LONG).show()
-                bluetoothWifiServer = BluetoothWifiServer { ssid, password ->
+                bluetoothWifiServer = BluetoothWifiServer { ssid, password, phoneUrl ->
                     runOnUiThread {
                         try {
                             // DEBUG: Log what we received in MainActivity
                             android.util.Log.i("guida", "=== MAIN ACTIVITY RECEIVED CREDENTIALS ===")
                             android.util.Log.i("guida", "Received SSID: '$ssid' (length: ${ssid.length})")
                             android.util.Log.i("guida", "Received Password: '$password' (length: ${password.length})")
+                            if (!phoneUrl.isNullOrBlank()) {
+                                android.util.Log.i("guida", "Received phone API URL from provisioning: $phoneUrl")
+                                viewModel.updatePhoneApiUrl(phoneUrl)
+                                audioManager.speak("Phone API configured")
+                            }
                             
                             if (ssid.isEmpty()) {
                                 android.util.Log.e("guida", "ERROR: Received empty SSID!")
@@ -265,11 +270,27 @@ class MainActivity : ComponentActivity() {
     
     // Test WiFi connection function
     private fun testWifiConnection() {
-        // Replace these with your actual WiFi credentials
-        val ssid = "19-3"  // Your actual WiFi name
-        val password = "13813355882"  // Your actual WiFi password
-        
-        android.util.Log.i("guida", "Testing WiFi connection to: $ssid")
+        // Improved behavior:
+        // 1) If no credentials were received from phone, tell the user we're waiting.
+        // 2) If credentials exist, attempt to connect or report current connection status.
+        val pending = viewModel.getPendingCredentials()
+        if (pending == null) {
+            audioManager.speak("Waiting for phone app to send hotspot credential")
+            android.widget.Toast.makeText(this, "Waiting for phone app to send hotspot credential", android.widget.Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val (ssid, password) = pending
+        // Check current wifi state
+        val wifiState = viewModel.wifiState
+        val currentState = wifiState.value
+        if (currentState is GuidaWifiManager.WifiState.Connected && currentState.ssid == ssid) {
+            audioManager.speak("Already connected to $ssid")
+            android.widget.Toast.makeText(this, "Already connected to $ssid", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        android.util.Log.i("guida", "Testing WiFi connection to pending SSID: $ssid")
         viewModel.connectToWifi(ssid, password)
     }
 
