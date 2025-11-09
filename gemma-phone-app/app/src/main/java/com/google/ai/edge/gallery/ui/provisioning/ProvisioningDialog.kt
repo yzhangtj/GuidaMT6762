@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.DropdownMenu
@@ -49,7 +50,9 @@ fun ProvisioningDialog(
 ) {
   val devices by viewModel.devices.collectAsState()
   val statusMessage by viewModel.status.collectAsState()
+  val isSending by viewModel.isSending.collectAsState()
   val wifiState by viewModel.wifiState.collectAsState()
+  val isBluetoothEnabled by viewModel.bluetoothEnabled.collectAsState()
 
   val context = LocalContext.current
   val permissionLauncher = rememberLauncherForActivityResult(
@@ -81,18 +84,28 @@ fun ProvisioningDialog(
   AlertDialog(
     onDismissRequest = onDismiss,
     confirmButton = {
-      Button(
-        onClick = {
-          val device = selectedDevice
-          when {
-            device == null -> viewModel.setStatus("Select a paired device first")
-            ssid.isBlank() || password.isBlank() -> viewModel.setStatus("SSID and password cannot be empty")
-            else -> viewModel.sendCredentials(device, ssid, password)
-          }
-        },
-        enabled = devices.isNotEmpty(),
-      ) {
-        Text("Send to Glasses")
+      if (isSending) {
+        Button(onClick = {
+          // User cancels the current operation (note: this does not abort the background send thread,
+          // but it updates UI state so the dialog can close or show cancelled state).
+          viewModel.setStatus("Cancelled")
+        }) {
+          Text("Cancel")
+        }
+      } else {
+        Button(
+          onClick = {
+            val device = selectedDevice
+            when {
+              device == null -> viewModel.setStatus("Select a paired device first")
+              ssid.isBlank() || password.isBlank() -> viewModel.setStatus("SSID and password cannot be empty")
+              else -> viewModel.sendCredentials(device, ssid, password)
+            }
+          },
+          enabled = devices.isNotEmpty(),
+        ) {
+          Text("Send to Glasses")
+        }
       }
     },
     dismissButton = {
@@ -177,6 +190,12 @@ fun ProvisioningDialog(
           }
         Text("Wi-Fi status: $wifiStatus")
 
+        // Show status and a progress indicator when sending.
+        if (isSending) {
+          Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+            CircularProgressIndicator(modifier = Modifier.padding(top = 8.dp))
+          }
+        }
         statusMessage?.let { Text(it) }
       }
     },

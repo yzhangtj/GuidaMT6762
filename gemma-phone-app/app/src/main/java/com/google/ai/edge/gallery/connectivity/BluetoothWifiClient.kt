@@ -50,22 +50,63 @@ class BluetoothWifiClient {
         adapter.cancelDiscovery()
         Thread.sleep(2000)
 
+        // If the device is not bonded (paired), try to initiate bonding so the remote
+        // server will accept RFCOMM connections on some stacks.
+        try {
+          if (device.bondState != BluetoothDevice.BOND_BONDED) {
+            Log.i(TAG, "Device not bonded (state=${device.bondState}), initiating bonding...")
+            val initiated = try {
+              device.createBond()
+            } catch (e: Exception) {
+              Log.w(TAG, "createBond() failed: ${e.message}")
+              false
+            }
+            if (initiated) {
+              // Wait up to 20s for bonding to complete
+              val start = System.currentTimeMillis()
+              while (System.currentTimeMillis() - start < 20_000 && device.bondState != BluetoothDevice.BOND_BONDED) {
+                Log.i(TAG, "Waiting for bond to complete, current state=${device.bondState}")
+                try { Thread.sleep(1000) } catch (_: InterruptedException) {}
+              }
+              Log.i(TAG, "Bond state after wait: ${device.bondState}")
+            } else {
+              Log.w(TAG, "Bonding not initiated or failed")
+            }
+          } else {
+            Log.i(TAG, "Device already bonded")
+          }
+        } catch (e: Exception) {
+          Log.w(TAG, "Error while attempting bonding: ${e.message}")
+        }
+
+        var socketType = "secure"
         socket =
           try {
-              Log.i(TAG, "Trying createRfcommSocketToServiceRecord...")
-              device.createRfcommSocketToServiceRecord(serviceUUID)
-            } catch (e: Exception) {
-              Log.w(TAG, "Standard socket creation failed, trying reflection method...")
+            Log.i(TAG, "Trying createRfcommSocketToServiceRecord...")
+            socketType = "secure"
+            device.createRfcommSocketToServiceRecord(serviceUUID)
+          } catch (e: Exception) {
+            Log.w(TAG, "Standard socket creation failed: ${e.message}. Trying insecure socket or reflection...")
+            // Try insecure socket (some devices accept insecure RFCOMM)
+            try {
+              Log.i(TAG, "Trying createInsecureRfcommSocketToServiceRecord...")
+              socketType = "insecure"
+              device.createInsecureRfcommSocketToServiceRecord(serviceUUID)
+            } catch (ie: Exception) {
+              Log.w(TAG, "Insecure socket creation failed: ${ie.message}. Falling back to reflection...")
+              socketType = "reflection"
               val method = device.javaClass.getMethod("createRfcommSocket", Int::class.javaPrimitiveType)
               method.invoke(device, 1) as BluetoothSocket
             }
+          }
 
-        Log.i(TAG, "Connecting to socket...")
-        // Retry connect a few times because some Android Bluetooth stacks
+        Log.i(TAG, "Connecting to socket... (type=$socketType)")
+        // Retry connect more times because some Android Bluetooth stacks
         // can fail the RFCOMM handshake transiently with read failed / -1.
         var connected = false
         var connectException: Exception? = null
-        for (attempt in 1..3) {
+        val maxConnectAttempts = 6
+        for (attempt in 1..maxConnectAttempts) {
           try {
             socket.connect()
             connected = true
@@ -75,7 +116,7 @@ class BluetoothWifiClient {
             connectException = e
             Log.w(TAG, "Connect attempt $attempt failed: ${e.message}")
             try {
-              Thread.sleep(300)
+              Thread.sleep(700)
             } catch (ie: InterruptedException) {
               // ignore
             }
@@ -85,9 +126,9 @@ class BluetoothWifiClient {
         Log.i(TAG, "Connected! Preparing to send credentials...")
 
         val writer = OutputStreamWriter(socket.outputStream)
+        val reader = socket.inputStream.bufferedReader()
 
         // Compute a reasonable phone-local API URL to send to the glasses as a 3rd CSV token.
-        // Try to use the device's current Wi-Fi IP; fall back to the common tethering gateway.
         var phoneUrl: String? = null
         try {
           val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
@@ -101,26 +142,73 @@ class BluetoothWifiClient {
         }
 
         if (phoneUrl == null) {
-          // Common Android hotspot/tethering gateway if Wi‑Fi IP not available.
           phoneUrl = "http://192.168.43.1:5000"
         }
 
         val message = "$ssid,$password,$phoneUrl"
 
-  Log.i(TAG, "=== FINAL MESSAGE TO SEND ===")
-  Log.i(TAG, "Message: '$message'")
+        Log.i(TAG, "=== FINAL MESSAGE TO SEND ===")
+        Log.i(TAG, "Message: '$message'")
 
-        writer.write("$message\n")
-        writer.flush()
+        // Retries for send+ACK
+        val maxAttempts = 3
+        val ackTimeoutMs = 3000L
+        var sentOk = false
+        var lastError: String? = null
+        for (attempt in 1..maxAttempts) {
+          try {
+            writer.write("$message\n")
+            writer.flush()
+            Log.i(TAG, "Wrote message, waiting for ACK (attempt $attempt)")
 
-        // Match legacy behaviour: write, flush, sleep briefly to allow transfer, then close.
-        // Reading from the socket is unreliable across device implementations and has caused
-        // "read failed" errors on some phones. Reverting to the simpler pattern used in the
-        // previous phone app avoids those spurious read failures.
-        try {
-          Thread.sleep(1000)
-        } catch (e: InterruptedException) {
-          // ignore
+                // Wait for a short ACK line from the glasses.
+                // Use a short-lived executor to perform a blocking readLine() with a timeout,
+                // which is more portable across Bluetooth stacks than reader.ready().
+                val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+                try {
+                  val future = executor.submit<String?> {
+                    try {
+                      reader.readLine()
+                    } catch (e: Exception) {
+                      Log.w(TAG, "Reader thread exception: ${e.message}")
+                      null
+                    }
+                  }
+
+                  val ack = try {
+                    future.get(ackTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+                  } catch (te: Exception) {
+                    Log.w(TAG, "ACK read timed out or failed: ${te.message}")
+                    future.cancel(true)
+                    null
+                  }
+
+                  Log.i(TAG, "Received ACK: $ack")
+                  if (ack != null && ack.trim().equals("OK", ignoreCase = true)) {
+                    sentOk = true
+                  }
+                } finally {
+                  try {
+                    executor.shutdownNow()
+                  } catch (e: Exception) {
+                    // ignore
+                  }
+                }
+            if (sentOk) break
+
+            // If no ack, backoff and retry
+            Log.w(TAG, "No ACK received on attempt $attempt")
+            lastError = "No ACK received"
+            Thread.sleep(300)
+          } catch (e: Exception) {
+            Log.w(TAG, "Error during send/ack attempt $attempt: ${e.message}")
+            lastError = e.message
+            try {
+              Thread.sleep(300)
+            } catch (ie: InterruptedException) {
+              // ignore
+            }
+          }
         }
 
         try {
@@ -135,8 +223,13 @@ class BluetoothWifiClient {
           Log.w(TAG, "Error closing socket: ${e.message}")
         }
 
-        Log.i(TAG, "Credentials sent successfully (legacy mode, no ACK read)")
-        onResult(true, "Credentials sent successfully!")
+        if (sentOk) {
+          Log.i(TAG, "Credentials sent successfully (ACK received)")
+          onResult(true, "Credentials sent successfully (ACK)")
+        } else {
+          Log.e(TAG, "Failed to receive ACK after $maxAttempts attempts")
+          onResult(false, "Failed to receive ACK: ${lastError ?: "unknown"}")
+        }
       } catch (e: Exception) {
         Log.e(TAG, "Error sending credentials: ${e.message}", e)
         try {
