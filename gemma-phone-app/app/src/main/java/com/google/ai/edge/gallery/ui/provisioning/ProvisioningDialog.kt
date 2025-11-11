@@ -51,6 +51,7 @@ fun ProvisioningDialog(
   val devices by viewModel.devices.collectAsState()
   val statusMessage by viewModel.status.collectAsState()
   val isSending by viewModel.isSending.collectAsState()
+  val isScanning by viewModel.isScanning.collectAsState()
   val wifiState by viewModel.wifiState.collectAsState()
   val isBluetoothEnabled by viewModel.bluetoothEnabled.collectAsState()
 
@@ -114,7 +115,7 @@ fun ProvisioningDialog(
     title = { Text("Connect Glasses") },
     text = {
       Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Choose a paired Bluetooth device and send Wi-Fi credentials.")
+        Text("Scan for BLE devices and send Wi-Fi credentials.")
 
         Box {
           OutlinedTextField(
@@ -128,7 +129,8 @@ fun ProvisioningDialog(
                 Icon(Icons.Rounded.ArrowDropDown, contentDescription = null)
               }
             },
-            placeholder = { Text("Select a paired device") },
+            placeholder = { Text("Select a device") },
+            enabled = !isScanning && devices.isNotEmpty(),
           )
           DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             devices.forEach { device ->
@@ -144,8 +146,11 @@ fun ProvisioningDialog(
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-          OutlinedButton(onClick = { viewModel.refreshDevices() }) {
-            Text("Refresh devices")
+          OutlinedButton(
+            onClick = { viewModel.scanForDevices() },
+            enabled = !isScanning && !isSending
+          ) {
+            Text(if (isScanning) "Scanning..." else "Scan for devices")
           }
           if (!hasBluetoothPermission) {
             OutlinedButton(onClick = {
@@ -162,8 +167,14 @@ fun ProvisioningDialog(
           }
         }
 
-        if (devices.isEmpty()) {
-          Text("No paired Bluetooth devices found. Pair the glasses in Android settings first.")
+        if (isScanning) {
+          Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+            CircularProgressIndicator(modifier = Modifier.padding(top = 8.dp))
+          }
+        }
+
+        if (devices.isEmpty() && !isScanning) {
+          Text("No BLE devices found. Make sure glasses are in pairing mode (F1 long press) and click 'Scan for devices'.")
         }
 
         OutlinedTextField(

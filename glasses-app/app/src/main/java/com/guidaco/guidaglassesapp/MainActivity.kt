@@ -27,7 +27,7 @@ import com.google.accompanist.permissions.rememberMultiplePermissionsState
 import com.guidaco.guidaglassesapp.ui.theme.GuidaGlassesAppTheme
 import androidx.compose.ui.platform.LocalContext
 import android.widget.Toast
-import com.guidaco.guidaglassesapp.BluetoothWifiServer
+import com.guidaco.guidaglassesapp.BleGattServer
 import android.os.Handler
 import android.os.Looper
 import android.bluetooth.BluetoothAdapter
@@ -40,29 +40,74 @@ import android.bluetooth.le.BluetoothLeAdvertiser
 import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.util.Log
+import java.util.UUID
+import android.os.PowerManager
+import android.content.Context
 
 @OptIn(ExperimentalPermissionsApi::class)
 class MainActivity : ComponentActivity() {
 
     private lateinit var viewModel: MainViewModel
-    private var bluetoothWifiServer: BluetoothWifiServer? = null
+    private var bleGattServer: BleGattServer? = null
     private lateinit var audioManager: AudioManager
     private var f1LongPressHandled = false
     private var f1DownTime: Long = 0L
     private val f1LongPressTimeout = 500L // ms
+    private var f2LongPressHandled = false
+    private var f2DownTime: Long = 0L
+    private val f2LongPressTimeout = 500L // ms
     private val handler = Handler(Looper.getMainLooper())
     private val BLUETOOTH_NAME = "GuidaGlasses-0001"
     private val DISCOVERABLE_DURATION = 120 // seconds
     private val REQUEST_BLUETOOTH_PERMISSIONS = 1002
-    private var pendingF1LongPress = false
+    private var pendingF2LongPress = false
     private var bleAdvertiser: BluetoothLeAdvertiser? = null
     private var bleAdvertiseCallback: AdvertiseCallback? = null
+    
+    // F1 long press: Power on/off
     private val f1LongPressRunnable = Runnable {
         f1LongPressHandled = true
+        android.util.Log.i("guida", "F1 long press - power on/off")
+        togglePower()
+    }
+    
+    private fun togglePower() {
+        runOnUiThread {
+            try {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+                if (powerManager.isInteractive) {
+                    // Device is on, turn it off (go to sleep)
+                    android.util.Log.i("guida", "Turning device off (going to sleep)")
+                    audioManager.speak("Powering off")
+                    // Move task to back and let system handle sleep
+                    moveTaskToBack(true)
+                    // Note: Actual sleep requires system permissions, but moving to background is the best we can do
+                } else {
+                    // Device is off, turn it on (wake up)
+                    android.util.Log.i("guida", "Turning device on (waking up)")
+                    audioManager.speak("Powering on")
+                    val wakeLock = powerManager.newWakeLock(
+                        PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                        "GuidaGlasses::PowerOn"
+                    )
+                    wakeLock.acquire(1000) // Hold for 1 second
+                    wakeLock.release()
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("guida", "Error toggling power: ${e.message}", e)
+                audioManager.speak("Power toggle error: ${e.message}")
+                Toast.makeText(this, "Power toggle error: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+    
+    // F2 long press: Bluetooth pairing mode
+    private val f2LongPressRunnable = Runnable {
+        f2LongPressHandled = true
         ensureBluetoothPermissionsAndRun {
             startBleAdvertising()
             makeDeviceDiscoverable()
-            android.util.Log.i("guida", "F1 manual long press - starting Bluetooth WiFi provisioning")
+            android.util.Log.i("guida", "F2 long press - starting Bluetooth WiFi provisioning")
             try {
                 // Set Bluetooth name on UI thread
                 runOnUiThread {
@@ -90,12 +135,12 @@ class MainActivity : ComponentActivity() {
                         return@runOnUiThread
                     }
                 }
-                Toast.makeText(this, "Waiting for phone to send WiFi credentials via Bluetooth...", Toast.LENGTH_LONG).show()
-                bluetoothWifiServer = BluetoothWifiServer { ssid, password, phoneUrl ->
+                Toast.makeText(this, "Waiting for phone to send WiFi credentials via BLE...", Toast.LENGTH_LONG).show()
+                bleGattServer = BleGattServer(this) { ssid, password, phoneUrl ->
                     runOnUiThread {
                         try {
                             // DEBUG: Log what we received in MainActivity
-                            android.util.Log.i("guida", "=== MAIN ACTIVITY RECEIVED CREDENTIALS ===")
+                            android.util.Log.i("guida", "=== MAIN ACTIVITY RECEIVED CREDENTIALS (BLE) ===")
                             android.util.Log.i("guida", "Received SSID: '$ssid' (length: ${ssid.length})")
                             android.util.Log.i("guida", "Received Password: '$password' (length: ${password.length})")
                             if (!phoneUrl.isNullOrBlank()) {
@@ -128,7 +173,12 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                bluetoothWifiServer?.start()
+                val started = bleGattServer?.start()
+                if (started != true) {
+                    android.util.Log.e("guida", "Failed to start BLE GATT server")
+                    audioManager.speak("Failed to start Bluetooth server")
+                    Toast.makeText(this, "Failed to start BLE GATT server", Toast.LENGTH_LONG).show()
+                }
             } catch (e: Exception) {
                 android.util.Log.e("guida", "Error in F1 long press runnable: ${e.message}", e)
                 runOnUiThread {
@@ -217,8 +267,11 @@ class MainActivity : ComponentActivity() {
                 return true
             }
             android.view.KeyEvent.KEYCODE_F2 -> {
-                android.util.Log.i("guida", "F2 button pressed")
-                viewModel.onF2ButtonPressed()
+                if (event?.repeatCount == 0) {
+                    f2LongPressHandled = false
+                    f2DownTime = System.currentTimeMillis()
+                    handler.postDelayed(f2LongPressRunnable, f2LongPressTimeout)
+                }
                 return true
             }
             android.view.KeyEvent.KEYCODE_VOLUME_UP -> {
@@ -255,6 +308,13 @@ class MainActivity : ComponentActivity() {
                         // Short press: trigger capture + speech recognition
                         Log.i("guida", "F1 short press detected! Calling viewModel.onF1ButtonPressed()")
                         viewModel.onF1ButtonPressed()
+                    }
+                } else if (keyCode == android.view.KeyEvent.KEYCODE_F2) {
+                    handler.removeCallbacks(f2LongPressRunnable)
+                    if (!f2LongPressHandled) {
+                        // Short press: trigger video recording (or whatever F2 does)
+                        android.util.Log.i("guida", "F2 short press detected! Calling viewModel.onF2ButtonPressed()")
+                        viewModel.onF2ButtonPressed()
                     }
                 }
                 return true
@@ -303,7 +363,7 @@ class MainActivity : ComponentActivity() {
             )
             val notGranted = permissions.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
             if (notGranted.isNotEmpty()) {
-                pendingF1LongPress = true
+                pendingF2LongPress = true
                 requestPermissions(notGranted.toTypedArray(), REQUEST_BLUETOOTH_PERMISSIONS)
                 return
             }
@@ -317,9 +377,9 @@ class MainActivity : ComponentActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_BLUETOOTH_PERMISSIONS) {
             if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
-                if (pendingF1LongPress) {
-                    pendingF1LongPress = false
-                    handler.post(f1LongPressRunnable)
+                if (pendingF2LongPress) {
+                    pendingF2LongPress = false
+                    handler.post(f2LongPressRunnable)
                 }
             } else {
                 audioManager.speak("Bluetooth permissions denied. Cannot start pairing mode.")
@@ -333,24 +393,39 @@ class MainActivity : ComponentActivity() {
         if (adapter == null || !adapter.isEnabled) return
         bleAdvertiser = adapter.bluetoothLeAdvertiser
         if (bleAdvertiser == null) return
+        
+        // Service UUID: 0xFFF0
+        val serviceUuid = UUID.fromString("0000FFF0-0000-1000-8000-00805F9B34FB")
+        
+        // Advertising settings: Legacy ADV_IND (1M), interval 100-200ms
         val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED) // Balanced mode for 100-200ms interval
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
             .setConnectable(true)
             .build()
+        
+        // Advertising data: Include Service UUID 0xFFF0 and device name
+        // Flags=0x06 means: LE Limited Discoverable Mode + BR/EDR Not Supported
         val data = AdvertiseData.Builder()
             .setIncludeDeviceName(true)
+            .addServiceUuid(android.os.ParcelUuid(serviceUuid))
             .build()
+        
+        // Scan response data (optional, can include more info)
+        val scanResponse = AdvertiseData.Builder()
+            .setIncludeDeviceName(true)
+            .build()
+        
         bleAdvertiseCallback = object : AdvertiseCallback() {
             override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
-                android.util.Log.i("guida", "BLE advertising started successfully")
+                android.util.Log.i("guida", "BLE advertising started successfully with Service UUID 0xFFF0")
             }
             override fun onStartFailure(errorCode: Int) {
                 android.util.Log.e("guida", "BLE advertising failed: $errorCode")
             }
         }
-        bleAdvertiser?.startAdvertising(settings, data, bleAdvertiseCallback)
-        android.util.Log.i("guida", "BLE advertising started")
+        bleAdvertiser?.startAdvertising(settings, data, scanResponse, bleAdvertiseCallback)
+        android.util.Log.i("guida", "BLE advertising started with Service UUID 0xFFF0")
     }
 
     private fun stopBleAdvertising() {
@@ -384,6 +459,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         stopBleAdvertising()
+        bleGattServer?.stop()
     }
 }
 

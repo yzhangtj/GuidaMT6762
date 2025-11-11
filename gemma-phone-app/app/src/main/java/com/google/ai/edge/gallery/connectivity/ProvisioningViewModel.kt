@@ -18,7 +18,7 @@ class ProvisioningViewModel
 @Inject
 constructor(application: Application) : AndroidViewModel(application) {
 
-  private val bluetoothClient = BluetoothWifiClient()
+  private val bleGattClient = BleGattClient(application)
   private val wifiManager = GuidaWifiManager(application)
   private val bluetoothAdapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
 
@@ -32,28 +32,20 @@ constructor(application: Application) : AndroidViewModel(application) {
   private val _bluetoothEnabled = MutableStateFlow(bluetoothAdapter?.isEnabled == true)
   val bluetoothEnabled: StateFlow<Boolean> = _bluetoothEnabled.asStateFlow()
 
-  // Convenience: whether a device is currently bonded (paired)
-  fun isDeviceBonded(device: BluetoothDevice): Boolean {
-    return try {
-      bluetoothAdapter?.bondedDevices?.any { it.address == device.address } == true
-    } catch (e: Exception) {
-      false
-    }
-  }
-
   // Expose whether a send operation is in progress so the UI can show a spinner / disable inputs.
   private val _isSending = MutableStateFlow(false)
   val isSending: StateFlow<Boolean> = _isSending.asStateFlow()
+  
+  private val _isScanning = MutableStateFlow(false)
+  val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
 
   val wifiState: StateFlow<GuidaWifiManager.WifiState> = wifiManager.wifiState
 
   init {
-    refreshDevices()
     // Listen for adapter state changes so UI updates live when user enables/disables Bluetooth.
     try {
       val filter = IntentFilter().apply {
         addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
-        addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
       }
       application.registerReceiver(object : BroadcastReceiver() {
         override fun onReceive(context: android.content.Context?, intent: Intent?) {
@@ -61,10 +53,6 @@ constructor(application: Application) : AndroidViewModel(application) {
             when (intent?.action) {
               BluetoothAdapter.ACTION_STATE_CHANGED -> {
                 _bluetoothEnabled.value = bluetoothAdapter?.isEnabled == true
-                refreshDevices()
-              }
-              BluetoothDevice.ACTION_BOND_STATE_CHANGED -> {
-                refreshDevices()
               }
             }
           } catch (e: Exception) {
@@ -77,16 +65,39 @@ constructor(application: Application) : AndroidViewModel(application) {
     }
   }
 
-  fun refreshDevices() {
-    val bonded =
-      try {
-        bluetoothAdapter?.bondedDevices?.toList().orEmpty()
-      } catch (securityException: SecurityException) {
-        _status.value = "Bluetooth permission required"
-        emptyList()
+  fun scanForDevices() {
+    if (bluetoothAdapter == null || !bluetoothAdapter!!.isEnabled) {
+      _status.value = "Bluetooth not enabled"
+      return
+    }
+    
+    _isScanning.value = true
+    _devices.value = emptyList()
+    _status.value = "Scanning for BLE devices with Service 0xFFF0..."
+    
+    val foundDevices = mutableListOf<BluetoothDevice>()
+    bleGattClient.scanForDevices { device ->
+      if (!foundDevices.any { it.address == device.address }) {
+        foundDevices.add(device)
+        _devices.value = foundDevices.toList()
+        _status.value = "Found: ${device.name ?: device.address}"
       }
-    _devices.value = bonded.sortedBy { it.name ?: it.address }
-    _bluetoothEnabled.value = bluetoothAdapter?.isEnabled == true
+    }
+    
+    // Stop scanning after 15 seconds
+    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+      _isScanning.value = false
+      if (foundDevices.isEmpty()) {
+        _status.value = "No devices found. Make sure glasses are in pairing mode (F1 long press)."
+      } else {
+        _status.value = "Found ${foundDevices.size} device(s)"
+      }
+    }, 15000)
+  }
+
+  fun refreshDevices() {
+    // For BLE, we scan instead of listing paired devices
+    scanForDevices()
   }
 
   fun getSuggestedSsid(): String? = wifiManager.getCurrentSsid()
@@ -100,18 +111,19 @@ constructor(application: Application) : AndroidViewModel(application) {
   fun sendCredentials(device: BluetoothDevice, ssid: String, password: String) {
     _status.value = "Sending credentials to ${device.name}..."
     _isSending.value = true
-    // Pass application context so the client can compute and append the phone-local URL token
-    bluetoothClient.sendCredentials(device, ssid, password, getApplication()) { success, message ->
+    bleGattClient.sendCredentialsToDevice(device, ssid, password) { success, message ->
       _status.value = message
       _isSending.value = false
-      if (success) {
-        refreshDevices()
-      }
     }
   }
 
   fun setStatus(message: String) {
     _status.value = message
+  }
+  
+  override fun onCleared() {
+    super.onCleared()
+    bleGattClient.disconnect()
   }
 }
 
