@@ -63,6 +63,7 @@ dependencies {
     implementation("androidx.camera:camera-core:1.3.1")
     implementation("androidx.camera:camera-camera2:1.3.1")
     implementation("androidx.camera:camera-lifecycle:1.3.1")
+    implementation("androidx.camera:camera-video:1.3.1")
     
     // Network requests
     implementation("com.squareup.retrofit2:retrofit:2.9.0")

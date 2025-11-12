@@ -47,13 +47,23 @@ class BleGattClient(private val context: Context) {
             Log.i(TAG, "Connection state changed: status=$status, newState=$newState")
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
-                    Log.i(TAG, "Connected to GATT server")
-                    gatt.discoverServices()
+                    Log.i(TAG, "Connected to GATT server, status=$status")
+                    if (status == BluetoothGatt.GATT_SUCCESS) {
+                        // Request MTU for better throughput (optional but recommended)
+                        gatt.requestMtu(512)
+                        gatt.discoverServices()
+                    } else {
+                        Log.e(TAG, "Connection failed with status: $status")
+                        onCredentialsSent?.invoke(false, "Connection failed: $status")
+                    }
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
-                    Log.i(TAG, "Disconnected from GATT server")
+                    Log.i(TAG, "Disconnected from GATT server, status=$status")
                     this@BleGattClient.gatt = null
                     connectedDevice = null
+                    if (status != BluetoothGatt.GATT_SUCCESS) {
+                        onCredentialsSent?.invoke(false, "Disconnected unexpectedly: $status")
+                    }
                 }
             }
         }
@@ -64,13 +74,9 @@ class BleGattClient(private val context: Context) {
                 val service = gatt.getService(SERVICE_UUID)
                 if (service != null) {
                     Log.i(TAG, "Found service 0xFFF0")
+                    // Enable notifications first, credentials will be sent after CCCD is written
                     enableNotifications(gatt, service)
-                    // If we have pending credentials, send them now
-                    if (pendingSsid != null && pendingPassword != null) {
-                        sendCredentialsWithData(gatt, pendingSsid!!, pendingPassword!!)
-                        pendingSsid = null
-                        pendingPassword = null
-                    }
+                    // Don't send credentials here - wait for notifications to be enabled
                 } else {
                     Log.e(TAG, "Service 0xFFF0 not found")
                     onCredentialsSent?.invoke(false, "Service 0xFFF0 not found")
@@ -118,7 +124,26 @@ class BleGattClient(private val context: Context) {
             Log.i(TAG, "Descriptor write completed: uuid=${descriptor.uuid}, status=$status")
             if (status == BluetoothGatt.GATT_SUCCESS && descriptor.uuid == CCCD_UUID) {
                 Log.i(TAG, "Notifications enabled, sending credentials")
-                sendCredentials(gatt)
+                // Send credentials after notifications are enabled
+                if (pendingSsid != null && pendingPassword != null) {
+                    sendCredentialsWithData(gatt, pendingSsid!!, pendingPassword!!)
+                    pendingSsid = null
+                    pendingPassword = null
+                } else {
+                    Log.w(TAG, "Notifications enabled but no pending credentials to send")
+                }
+            } else if (status != BluetoothGatt.GATT_SUCCESS) {
+                Log.e(TAG, "Failed to write CCCD descriptor: $status")
+                onCredentialsSent?.invoke(false, "Failed to enable notifications: $status")
+            }
+        }
+        
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            Log.i(TAG, "MTU changed: mtu=$mtu, status=$status")
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                Log.i(TAG, "MTU negotiation successful: $mtu bytes")
+            } else {
+                Log.w(TAG, "MTU negotiation failed: $status, using default MTU")
             }
         }
     }
@@ -234,43 +259,7 @@ class BleGattClient(private val context: Context) {
         Log.i(TAG, "Enabling notifications...")
     }
     
-    private fun sendCredentials(gatt: BluetoothGatt) {
-        val service = gatt.getService(SERVICE_UUID)
-        val characteristic = service?.getCharacteristic(CHAR_WRITE_CREDENTIALS_UUID)
-        
-        if (characteristic == null) {
-            Log.e(TAG, "Characteristic 0xFFF2 not found")
-            onCredentialsSent?.invoke(false, "Characteristic 0xFFF2 not found")
-            return
-        }
-        
-        // Get WiFi credentials and phone URL
-        val ssid = getSuggestedSsid() ?: ""
-        val password = "" // This should come from user input or stored value
-        val phoneUrl = getPhoneApiUrl()
-        
-        if (ssid.isEmpty() || password.isEmpty()) {
-            Log.e(TAG, "SSID or password is empty")
-            onCredentialsSent?.invoke(false, "SSID or password is empty")
-            return
-        }
-        
-        val message = "$ssid,$password,$phoneUrl"
-        Log.i(TAG, "=== SENDING CREDENTIALS (BLE) ===")
-        Log.i(TAG, "Message: '$message'")
-        
-        characteristic.value = message.toByteArray()
-        characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-        
-        val success = gatt.writeCharacteristic(characteristic)
-        if (!success) {
-            Log.e(TAG, "Failed to write characteristic")
-            onCredentialsSent?.invoke(false, "Failed to write characteristic")
-        } else {
-            Log.i(TAG, "Credentials written, waiting for notification...")
-            // Wait for notification callback (onCharacteristicChanged) for ACK
-        }
-    }
+    // Removed sendCredentials - credentials are now sent directly from onDescriptorWrite
     
     fun sendCredentialsToDevice(
         device: BluetoothDevice,
@@ -289,8 +278,23 @@ class BleGattClient(private val context: Context) {
         if (connectedDevice?.address == device.address && gatt != null) {
             val service = gatt?.getService(SERVICE_UUID)
             if (service != null) {
-                enableNotifications(gatt!!, service)
-                sendCredentialsWithData(gatt!!, ssid, password)
+                // Check if notifications are already enabled
+                val notifyChar = service.getCharacteristic(CHAR_NOTIFY_STATUS_UUID)
+                val descriptor = notifyChar?.getDescriptor(CCCD_UUID)
+                val notificationsEnabled = descriptor != null && 
+                    (descriptor.value?.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) == true)
+                
+                if (notificationsEnabled) {
+                    // Notifications already enabled, send credentials directly
+                    Log.i(TAG, "Notifications already enabled, sending credentials directly")
+                    sendCredentialsWithData(gatt!!, ssid, password)
+                } else {
+                    // Enable notifications first, credentials will be sent after CCCD write
+                    Log.i(TAG, "Enabling notifications, credentials will be sent after")
+                    pendingSsid = ssid
+                    pendingPassword = password
+                    enableNotifications(gatt!!, service)
+                }
             } else {
                 // Services not discovered yet, store credentials to send after discovery
                 pendingSsid = ssid
@@ -307,29 +311,67 @@ class BleGattClient(private val context: Context) {
     
     private fun sendCredentialsWithData(gatt: BluetoothGatt, ssid: String, password: String) {
         val service = gatt.getService(SERVICE_UUID)
-        val characteristic = service?.getCharacteristic(CHAR_WRITE_CREDENTIALS_UUID)
+        if (service == null) {
+            Log.e(TAG, "Service 0xFFF0 not found")
+            onCredentialsSent?.invoke(false, "Service 0xFFF0 not found")
+            return
+        }
         
+        val characteristic = service.getCharacteristic(CHAR_WRITE_CREDENTIALS_UUID)
         if (characteristic == null) {
             Log.e(TAG, "Characteristic 0xFFF2 not found")
             onCredentialsSent?.invoke(false, "Characteristic 0xFFF2 not found")
             return
         }
         
+        // Check characteristic properties
+        val properties = characteristic.properties
+        Log.i(TAG, "Characteristic 0xFFF2 properties: $properties")
+        val supportsWrite = (properties and BluetoothGattCharacteristic.PROPERTY_WRITE) != 0
+        val supportsWriteNoResponse = (properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0
+        Log.i(TAG, "Supports WRITE: $supportsWrite, Supports WRITE_NO_RESPONSE: $supportsWriteNoResponse")
+        
         val phoneUrl = getPhoneApiUrl()
         val message = "$ssid,$password,$phoneUrl"
         Log.i(TAG, "=== SENDING CREDENTIALS (BLE) ===")
-        Log.i(TAG, "Message: '$message'")
+        Log.i(TAG, "Message: '$message' (length: ${message.length} bytes)")
         
         characteristic.value = message.toByteArray()
-        characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
         
-        val success = gatt.writeCharacteristic(characteristic)
-        if (!success) {
-            Log.e(TAG, "Failed to write characteristic")
-            onCredentialsSent?.invoke(false, "Failed to write characteristic")
-        } else {
-            Log.i(TAG, "Credentials written, waiting for notification...")
+        // Try WRITE_TYPE_NO_RESPONSE first if supported (more efficient for BLE)
+        // Then fall back to WRITE_TYPE_DEFAULT
+        var success = false
+        val writeTypes = mutableListOf<Int>()
+        if (supportsWriteNoResponse) {
+            writeTypes.add(BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
         }
+        if (supportsWrite) {
+            writeTypes.add(BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+        }
+        
+        if (writeTypes.isEmpty()) {
+            Log.e(TAG, "Characteristic does not support any write type")
+            onCredentialsSent?.invoke(false, "Characteristic does not support write")
+            return
+        }
+        
+        for (writeType in writeTypes) {
+            characteristic.writeType = writeType
+            Log.i(TAG, "Attempting write with type: $writeType")
+            success = gatt.writeCharacteristic(characteristic)
+            if (success) {
+                Log.i(TAG, "Write initiated successfully with writeType=$writeType, waiting for callback...")
+                break
+            } else {
+                Log.w(TAG, "Write initiation failed with writeType=$writeType, trying next type...")
+            }
+        }
+        
+        if (!success) {
+            Log.e(TAG, "Failed to initiate write with all write types")
+            onCredentialsSent?.invoke(false, "Failed to write characteristic - check connection state")
+        }
+        // Note: Actual success/failure will be reported in onCharacteristicWrite callback
     }
     
     private fun getSuggestedSsid(): String? {

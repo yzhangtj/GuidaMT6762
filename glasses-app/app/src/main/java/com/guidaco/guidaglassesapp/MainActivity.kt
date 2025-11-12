@@ -56,6 +56,8 @@ class MainActivity : ComponentActivity() {
     private var f2LongPressHandled = false
     private var f2DownTime: Long = 0L
     private val f2LongPressTimeout = 500L // ms
+    private var f2LastPressTime: Long = 0L
+    private val f2DoublePressTimeout = 300L // ms - time window for double press
     private val handler = Handler(Looper.getMainLooper())
     private val BLUETOOTH_NAME = "GuidaGlasses-0001"
     private val DISCOVERABLE_DURATION = 120 // seconds
@@ -235,7 +237,7 @@ class MainActivity : ComponentActivity() {
                     }
                     MainScreen(
                         uiState = uiState,
-                        onControlButtonClick = { viewModel.onF1ButtonPressed() },
+                        onControlButtonClick = { viewModel.onF2ButtonPressed() },
                         onSettingsClick = {
                             startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
                         },
@@ -305,16 +307,30 @@ class MainActivity : ComponentActivity() {
                 if (keyCode == android.view.KeyEvent.KEYCODE_F1) {
                     handler.removeCallbacks(f1LongPressRunnable)
                     if (!f1LongPressHandled) {
-                        // Short press: trigger capture + speech recognition
-                        Log.i("guida", "F1 short press detected! Calling viewModel.onF1ButtonPressed()")
-                        viewModel.onF1ButtonPressed()
+                        // F1 short press: Do nothing (only long press for power on/off)
+                        Log.i("guida", "F1 short press - no action")
                     }
                 } else if (keyCode == android.view.KeyEvent.KEYCODE_F2) {
                     handler.removeCallbacks(f2LongPressRunnable)
                     if (!f2LongPressHandled) {
-                        // Short press: trigger video recording (or whatever F2 does)
-                        android.util.Log.i("guida", "F2 short press detected! Calling viewModel.onF2ButtonPressed()")
-                        viewModel.onF2ButtonPressed()
+                        // F2 short press: Check for double press or handle capture+speech/stop video
+                        val currentTime = System.currentTimeMillis()
+                        val timeSinceLastPress = currentTime - f2LastPressTime
+                        
+                        if (timeSinceLastPress < f2DoublePressTimeout && f2LastPressTime > 0) {
+                            // Double press detected - start video recording
+                            android.util.Log.i("guida", "F2 double press detected! Starting video recording")
+                            f2LastPressTime = 0L // Reset to prevent triple press
+                            viewModel.startVideoRecording()
+                        } else {
+                            // Single press - handle capture+speech or stop video if recording
+                            android.util.Log.i("guida", "F2 short press detected! Calling viewModel.onF2ButtonPressed()")
+                            viewModel.onF2ButtonPressed()
+                            f2LastPressTime = currentTime
+                        }
+                    } else {
+                        // Long press was handled, reset double press tracking
+                        f2LastPressTime = 0L
                     }
                 }
                 return true

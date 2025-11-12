@@ -28,10 +28,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var pendingSsid: String? = null
     private var pendingPassword: String? = null
     private var isListening = false
+    private var isRecordingVideo = false
     private var speechRecognitionManager: SpeechRecognitionManager? = null
     private var lastCapturedImage: File? = null
     private var lastRecognizedText: String? = null
     private var speechJob: Job? = null
+    private var currentVideoFile: File? = null
 
     val wifiState: StateFlow<GuidaWifiManager.WifiState> = wifiManager.wifiState
 
@@ -60,7 +62,57 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun onF1ButtonPressed() {
-        Log.i("guida", "[MainViewModel] onF1ButtonPressed called. Current state: ${_uiState.value}, isListening: $isListening")
+        // F1 short press: Do nothing (only long press for power on/off)
+        Log.i("guida", "[MainViewModel] F1 short press - no action")
+    }
+
+    private fun sendDataToServer() {
+        val imageFile = lastCapturedImage
+        val text = lastRecognizedText ?: ""
+        
+        Log.i("guida", "[MainViewModel] Sending data to server:")
+        Log.i("guida", "[MainViewModel] Image file: ${imageFile?.absolutePath}")
+        Log.i("guida", "[MainViewModel] Text: '$text'")
+        
+        if (imageFile == null) {
+            _uiState.value = UiState.Error("No image captured")
+            return
+        }
+        
+        httpClient.sendImageAndText(
+            imageFile = imageFile,
+            recognizedText = text,
+            onSuccess = { response, apiProvider ->
+                // Show the response on screen and speak it
+                _uiState.value = UiState.ShowingResponse(response, apiProvider)
+                
+                // Speak the response to the user
+                audioManager.speakOffline(response)
+                
+                // Reset to awaiting input after a delay
+                CoroutineScope(Dispatchers.Main).launch {
+                    kotlinx.coroutines.delay(10000) // Show message for 10 seconds to allow TTS to complete and user to read
+                    _uiState.value = UiState.AwaitingInput
+                }
+            },
+            onError = { error ->
+                _uiState.value = UiState.Error("Failed to send data: $error")
+                // Also speak the error
+                audioManager.speakOffline("Error occurred: $error")
+            }
+        )
+    }
+
+    fun onF2ButtonPressed() {
+        Log.i("guida", "[MainViewModel] onF2ButtonPressed called. isRecordingVideo: $isRecordingVideo, isListening: $isListening")
+        
+        // If video is recording, stop video recording
+        if (isRecordingVideo) {
+            stopVideoRecording()
+            return
+        }
+        
+        // Otherwise, handle capture + speech recognition
         if (!isListening) {
             // Start capture and listening
             audioManager.speakOffline("Capturing image and starting speech recognition")
@@ -108,7 +160,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             speechJob?.let { job ->
                 CoroutineScope(Dispatchers.Main).launch {
                     job.join() // Wait for speech recognition to complete
-            isListening = false
+                    isListening = false
                     _uiState.value = UiState.Processing("Speech stopped. Sending data to server...")
                     sendDataToServer()
                 }
@@ -116,57 +168,69 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // No speech job running, send data immediately
                 isListening = false
                 _uiState.value = UiState.Processing("Sending data to server...")
-            sendDataToServer()
+                sendDataToServer()
             }
         }
     }
-
-    private fun sendDataToServer() {
-        val imageFile = lastCapturedImage
-        val text = lastRecognizedText ?: ""
-        
-        Log.i("guida", "[MainViewModel] Sending data to server:")
-        Log.i("guida", "[MainViewModel] Image file: ${imageFile?.absolutePath}")
-        Log.i("guida", "[MainViewModel] Text: '$text'")
-        
-        if (imageFile == null) {
-            _uiState.value = UiState.Error("No image captured")
+    
+    fun startVideoRecording() {
+        if (isRecordingVideo) {
+            Log.w("guida", "[MainViewModel] Video recording already in progress")
             return
         }
         
-        httpClient.sendImageAndText(
-            imageFile = imageFile,
-            recognizedText = text,
-            onSuccess = { response, apiProvider ->
-                // Show the response on screen and speak it
-                _uiState.value = UiState.ShowingResponse(response, apiProvider)
-                
-                // Speak the response to the user
-                audioManager.speakOffline(response)
-                
-                // Reset to awaiting input after a delay
-                CoroutineScope(Dispatchers.Main).launch {
-                    kotlinx.coroutines.delay(10000) // Show message for 10 seconds to allow TTS to complete and user to read
-                    _uiState.value = UiState.AwaitingInput
-                }
+        Log.i("guida", "[MainViewModel] Starting video recording")
+        audioManager.speakOffline("Starting video recording")
+        _uiState.value = UiState.Processing("Starting video recording...")
+        
+        cameraManager.startVideoRecording(
+            onVideoStarted = { file ->
+                isRecordingVideo = true
+                currentVideoFile = file
+                _uiState.value = UiState.Processing("Recording video...")
+                audioManager.speakOffline("Video recording started")
+                Log.i("guida", "[MainViewModel] Video recording started: ${file.absolutePath}")
             },
-            onError = { error ->
-                _uiState.value = UiState.Error("Failed to send data: $error")
-                // Also speak the error
-                audioManager.speakOffline("Error occurred: $error")
+            onError = { exception ->
+                isRecordingVideo = false
+                _uiState.value = UiState.Error("Failed to start video recording: ${exception.message}")
+                audioManager.speakOffline("Video recording failed: ${exception.message}")
+                Log.e("guida", "[MainViewModel] Video recording error: ${exception.message}", exception)
             }
         )
     }
-
-    fun onF2ButtonPressed() {
-        // Stub for video recording
-        _uiState.value = UiState.Processing("F2 pressed: video recording not implemented yet.")
-        // Reset to awaiting input after a short delay
-        CoroutineScope(Dispatchers.Main).launch {
-            kotlinx.coroutines.delay(2000) // Show message for 2 seconds
-            _uiState.value = UiState.AwaitingInput
+    
+    fun stopVideoRecording() {
+        if (!isRecordingVideo) {
+            Log.w("guida", "[MainViewModel] No video recording in progress")
+            return
+        }
+        
+        Log.i("guida", "[MainViewModel] Stopping video recording")
+        audioManager.speakOffline("Stopping video recording")
+        _uiState.value = UiState.Processing("Stopping video recording...")
+        
+        cameraManager.stopVideoRecording { file ->
+            isRecordingVideo = false
+            if (file != null) {
+                _uiState.value = UiState.Processing("Video saved: ${file.name}")
+                audioManager.speakOffline("Video recording stopped and saved")
+                Log.i("guida", "[MainViewModel] Video recording stopped: ${file.absolutePath}")
+                
+                // Reset to awaiting input after a delay
+                CoroutineScope(Dispatchers.Main).launch {
+                    kotlinx.coroutines.delay(3000)
+                    _uiState.value = UiState.AwaitingInput
+                }
+            } else {
+                _uiState.value = UiState.Error("Failed to save video")
+                audioManager.speakOffline("Failed to save video")
+            }
+            currentVideoFile = null
         }
     }
+    
+    fun isRecordingVideo(): Boolean = isRecordingVideo
 
     fun onVolumeUpPressed() {
         // Test Android TTS when volume up is pressed
